@@ -9,17 +9,23 @@ to ROS 2 (Humble / Jazzy / Rolling), and the caveats to verify on a real ROS 2 m
 
 ## Build system
 
-- **catkin → ament / colcon** for every package.
-- `bruce`: catkin metapackage → `ament_cmake` metapackage.
+- **catkin → ament / colcon** for every package, using **`ament_cmake_auto`**:
+  each `CMakeLists.txt` calls `ament_auto_find_build_dependencies()` (which
+  `find_package`s all ROS deps declared in `package.xml`) and `ament_auto_package()`.
+  Non-CMake system deps whose rosdep keys are not CMake package names
+  (`python3-dev`, `libpcl-all-dev`) are quietly skipped by ament_auto and found
+  explicitly (`Python3`, `PCL`).
+- `bruce`: catkin metapackage → `ament_cmake` metapackage (`ament_auto_package()`).
 - `bruce_msgs`: `message_generation` → `rosidl_generate_interfaces`; `Header` fields are
   now `std_msgs/Header`. Only `ISAM2Update` plus the three services are generated (the
   GTSAM-dependent C++ conversion helpers remain disabled, as upstream).
-- `bruce_slam`: mixed C++/Python package built with `ament_cmake` +
-  `ament_cmake_python`. The `pcl` and `cfar` pybind11 modules are built with
-  `pybind11` (from `pybind11_vendor`) and installed next to the Python package so
-  `from bruce_slam import pcl` / `cfar` resolve. Node scripts install to
-  `lib/bruce_slam` and run with `ros2 run bruce_slam <node>.py`. The catkin
-  `setup.py` was removed.
+- `bruce_slam`: mixed C++/Python package. `ament_auto_find_build_dependencies()`
+  handles the ROS deps; `ament_cmake_python` / `Python3` / `pybind11` / `PCL` /
+  `libpointmatcher` are found explicitly. The `pcl` and `cfar` pybind11 modules are
+  installed next to the Python package so `from bruce_slam import pcl` / `cfar`
+  resolve, node scripts install to `lib/bruce_slam` (run with
+  `ros2 run bruce_slam <node>.py`), and `ament_auto_package(INSTALL_TO_SHARE launch
+  config rviz)` installs the resources. The catkin `setup.py` was removed.
 
 ## Vendored driver message stubs
 

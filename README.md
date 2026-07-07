@@ -51,7 +51,7 @@ ROS 2 Python interfaces used: `rclpy`, `sensor_msgs_py`, `tf2_ros`, `message_fil
 
 ```
 ROS 2 (Humble / Jazzy / Rolling)
-ament_cmake, ament_cmake_python
+ament_cmake, ament_cmake_auto, ament_cmake_python
 colcon
 pybind11_vendor
 PCL (libpcl-all-dev)

@@ -1,4 +1,5 @@
 cmake_minimum_required(VERSION 3.8)
 project(bruce)
-find_package(ament_cmake REQUIRED)
-ament_package()
+find_package(ament_cmake_auto REQUIRED)
+ament_auto_find_build_dependencies()
+ament_auto_package()

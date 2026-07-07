@@ -8,18 +8,19 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-O3)
 endif()
 
-find_package(ament_cmake REQUIRED)
+find_package(ament_cmake_auto REQUIRED)
+# auto-find all ament/ROS build dependencies declared in package.xml
+ament_auto_find_build_dependencies()
+
+# non-ament (system) dependencies: their rosdep keys (python3-dev, libpcl-all-dev)
+# are not CMake package names, so ament_auto quietly skips them -> find explicitly.
 find_package(ament_cmake_python REQUIRED)
-find_package(rclpy REQUIRED)
 find_package(Python3 REQUIRED COMPONENTS Interpreter Development)
-# pybind11_vendor makes a suitable pybind11 available on the ament prefix path
-find_package(pybind11_vendor QUIET)
 find_package(pybind11 REQUIRED)
 find_package(PCL REQUIRED)
 find_package(libpointmatcher REQUIRED)
 
-# Install the pure-Python package located under src/bruce_slam so that
-# `import bruce_slam` works after building.
+# Install the pure-Python package located under src/bruce_slam.
 ament_python_install_package(${PROJECT_NAME} PACKAGE_DIR src/${PROJECT_NAME})
 
 # ---------------------------------------------------------------------------
@@ -56,11 +57,5 @@ install(PROGRAMS
   DESTINATION lib/${PROJECT_NAME}
 )
 
-# ---------------------------------------------------------------------------
-# Resources
-# ---------------------------------------------------------------------------
-install(DIRECTORY launch config rviz
-  DESTINATION share/${PROJECT_NAME}
-)
-
-ament_package()
+# Installs launch/config/rviz to share/${PROJECT_NAME} and calls ament_package().
+ament_auto_package(INSTALL_TO_SHARE launch config rviz)

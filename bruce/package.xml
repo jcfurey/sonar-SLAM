@@ -13,6 +13,7 @@
     <url type="repository">https://github.com/RobustFieldAutonomyLab/bruce</url>
 
     <buildtool_depend>ament_cmake</buildtool_depend>
+    <buildtool_depend>ament_cmake_auto</buildtool_depend>
 
     <exec_depend>bruce_msgs</exec_depend>
     <exec_depend>bruce_slam</exec_depend>

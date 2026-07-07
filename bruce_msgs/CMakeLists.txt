@@ -5,12 +5,8 @@ if(NOT CMAKE_CXX_STANDARD)
   set(CMAKE_CXX_STANDARD 17)
 endif()
 
-find_package(ament_cmake REQUIRED)
-find_package(rosidl_default_generators REQUIRED)
-find_package(std_msgs REQUIRED)
-find_package(geometry_msgs REQUIRED)
-find_package(nav_msgs REQUIRED)
-find_package(sensor_msgs REQUIRED)
+find_package(ament_cmake_auto REQUIRED)
+ament_auto_find_build_dependencies()
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/ISAM2Update.msg"
@@ -24,6 +20,6 @@ rosidl_generate_interfaces(${PROJECT_NAME}
 
 # NOTE: the C++ ISAM2 <-> ROS conversion helpers (include/bruce_msgs/conversions.h,
 # src/bruce_msgs/conversions.cpp) depend on GTSAM and were disabled upstream. They
-# are left in the tree for reference and are not built here.
-
-ament_package()
+# are left in the tree for reference and are not built here. USE_SCOPED_HEADER_INSTALL_DIR
+# installs the existing include/ under include/${PROJECT_NAME} (avoids include pollution).
+ament_auto_package(USE_SCOPED_HEADER_INSTALL_DIR)
