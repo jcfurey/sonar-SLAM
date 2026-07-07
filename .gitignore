@@ -1,4 +1,8 @@
 *.vscode
 *.pyc
-bruce_slam/src/bruce_slam/__pycache__/
-bruce_slam/utils/__pycache__/
+__pycache__/
+
+# colcon / ament build artifacts
+build/
+install/
+log/

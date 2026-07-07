@@ -1,17 +1,52 @@
 <?xml version="1.0"?>
-<package format="2">
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
   <name>bruce_slam</name>
   <version>0.0.1</version>
   <description>
-        The BlueROV Underwater SLAM package.
+        The BlueROV Underwater SLAM package (ROS 2).
   </description>
   <author>Jinkun Wang</author>
   <maintainer email="jmcconn1@stevens.edu">John McConnell</maintainer>
-  <license>MIT License</license>
-  <buildtool_depend>catkin</buildtool_depend>
-  <depend>rospy</depend>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>ament_cmake_python</buildtool_depend>
+
+  <build_depend>pybind11_vendor</build_depend>
+  <build_depend>python3-dev</build_depend>
   <build_depend>libpointmatcher</build_depend>
-  <build_depend>message_generation</build_depend>
-  <exec_depend>sensor_msgs</exec_depend>
-  <exec_depend>message_runtime</exec_depend>
+  <build_depend>libpcl-all-dev</build_depend>
+
+  <depend>rclpy</depend>
+  <depend>std_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>visualization_msgs</depend>
+  <depend>rosgraph_msgs</depend>
+  <depend>tf2_ros</depend>
+  <depend>cv_bridge</depend>
+  <depend>message_filters</depend>
+  <depend>bruce_msgs</depend>
+  <depend>sonar_oculus</depend>
+  <depend>rti_dvl</depend>
+  <depend>bar30_depth</depend>
+  <depend>kvh_gyro</depend>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs_py</exec_depend>
+  <exec_depend>ros2launch</exec_depend>
+  <exec_depend>rosbag2_py</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-scipy</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
+  <exec_depend>python3-sklearn</exec_depend>
+  <exec_depend>python3-shapely</exec_depend>
+  <exec_depend>python3-matplotlib</exec_depend>
+  <exec_depend>python3-tqdm</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
 </package>

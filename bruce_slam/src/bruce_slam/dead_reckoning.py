@@ -1,11 +1,11 @@
 # python imports
-import tf
-import rospy
 import gtsam
 import numpy as np
 
 # ros-python imports
+from tf2_ros import TransformBroadcaster
 from nav_msgs.msg import Odometry
+from std_msgs.msg import Header
 from sensor_msgs.msg import PointCloud2, Imu
 from message_filters import ApproximateTimeSynchronizer, Cache, Subscriber
 
@@ -20,11 +20,8 @@ from bruce_slam.utils.conversions import *
 from bruce_slam.utils.io import *
 from bruce_slam.utils.visualization import ros_colorline_trajectory
 
-import math
-from std_msgs.msg import String, Float32
-from tf.transformations import euler_from_quaternion, quaternion_from_euler
 
-class DeadReckoningNode(object):
+class DeadReckoningNode(BruceNode):
 	'''A class to support dead reckoning using DVL and IMU readings
 	'''
 	def __init__(self):
@@ -52,41 +49,45 @@ class DeadReckoningNode(object):
 		self.rov_id = ""
 
 
-	def init_node(self, ns="~")->None:
+	def init_node(self, node_name="localization")->None:
 		"""Init the node, fetch all paramaters from ROS
 
 		Args:
-			ns (str, optional): The namespace of the node. Defaults to "~".
+			node_name (str, optional): The ROS 2 node name. Defaults to "localization".
 		"""
+
+		# initialise the underlying rclpy node
+		BruceNode.__init__(self, node_name)
+
 		# Parameters for Node
-		self.imu_pose = rospy.get_param(ns + "imu_pose")
+		self.imu_pose = self.get_param("imu_pose")
 		self.imu_pose = n2g(self.imu_pose, "Pose3")
 		self.imu_rot = self.imu_pose.rotation()
-		self.dvl_max_velocity = rospy.get_param(ns + "dvl_max_velocity")
-		self.keyframe_duration = rospy.get_param(ns + "keyframe_duration")
-		self.keyframe_translation = rospy.get_param(ns + "keyframe_translation")
-		self.keyframe_rotation = rospy.get_param(ns + "keyframe_rotation")
+		self.dvl_max_velocity = self.get_param("dvl_max_velocity")
+		self.keyframe_duration = self.get_param("keyframe_duration")
+		self.keyframe_translation = self.get_param("keyframe_translation")
+		self.keyframe_rotation = self.get_param("keyframe_rotation")
 
 		# Subscribers and caches
-		self.dvl_sub = Subscriber(DVL_TOPIC, DVL)
-		self.gyro_sub = Subscriber(GYRO_INTEGRATION_TOPIC, Odometry)
-		self.depth_sub = Subscriber(DEPTH_TOPIC, Depth)
+		self.dvl_sub = Subscriber(self, DVL, DVL_TOPIC)
+		self.gyro_sub = Subscriber(self, Odometry, GYRO_INTEGRATION_TOPIC)
+		self.depth_sub = Subscriber(self, Depth, DEPTH_TOPIC)
 		self.depth_cache = Cache(self.depth_sub, 1)
 
-		if rospy.get_param(ns + "imu_version") == 1:
-			self.imu_sub = Subscriber(IMU_TOPIC, Imu)
-		elif rospy.get_param(ns + "imu_version") == 2:
-			self.imu_sub = Subscriber(IMU_TOPIC_MK_II, Imu)
+		if self.get_param("imu_version") == 1:
+			self.imu_sub = Subscriber(self, Imu, IMU_TOPIC)
+		elif self.get_param("imu_version") == 2:
+			self.imu_sub = Subscriber(self, Imu, IMU_TOPIC_MK_II)
 
 		# Use point cloud for visualization
-		self.traj_pub = rospy.Publisher(
-			"traj_dead_reck", PointCloud2, queue_size=10)
+		self.traj_pub = self.create_publisher(
+			PointCloud2, "traj_dead_reck", 10)
 
-		self.odom_pub = rospy.Publisher(
-			LOCALIZATION_ODOM_TOPIC, Odometry, queue_size=10)
+		self.odom_pub = self.create_publisher(
+			Odometry, LOCALIZATION_ODOM_TOPIC, 10)
 
 		# are we using the FOG gyroscope?
-		self.use_gyro = rospy.get_param(ns + "use_gyro")
+		self.use_gyro = self.get_param("use_gyro")
 
 		# define the callback, are we using the gyro or the VN100?
 		if self.use_gyro:
@@ -96,7 +97,7 @@ class DeadReckoningNode(object):
 			self.ts = ApproximateTimeSynchronizer([self.imu_sub, self.dvl_sub], 200, .1)
 			self.ts.registerCallback(self.callback)
 
-		self.tf = tf.TransformBroadcaster()
+		self.tf = TransformBroadcaster(self)
 
 		loginfo("Localization node is initialized")
 
@@ -115,7 +116,7 @@ class DeadReckoningNode(object):
 			return
 
 		#check the delay between the depth message and the DVL
-		dd_delay = (depth_msg.header.stamp - dvl_msg.header.stamp).to_sec()
+		dd_delay = to_sec(depth_msg.header.stamp) - to_sec(dvl_msg.header.stamp)
 		#print(dd_delay)
 		if abs(dd_delay) > 1.0:
 			logdebug("Missing depth message for {}".format(dd_delay))
@@ -141,14 +142,14 @@ class DeadReckoningNode(object):
 		self.send_odometry(vel,rot,dvl_msg.header.stamp,depth_msg.depth)
 
 
-	def callback_with_gyro(self, imu_msg:Imu, dvl_msg:DVL, gyro_msg:GyroMsg)->None:
+	def callback_with_gyro(self, imu_msg:Imu, dvl_msg:DVL, gyro_msg:Odometry)->None:
 		"""Handle the dead reckoning state estimate using the fiber optic gyro. Here we use the
 		Gyro as a means of getting the yaw estimate, roll and pitch are still VN100.
 
 		Args:
 			imu_msg (Imu): the vn100 imu message
 			dvl_msg (DVL): the DVL message
-			gyro_msg (GyroMsg): the euler angles from the gyro
+			gyro_msg (Odometry): the integrated gyro odometry (from the gyro node)
 		"""
 		# decode the gyro message
 		gyro_yaw = r2g(gyro_msg.pose.pose).rotation().yaw()
@@ -161,7 +162,7 @@ class DeadReckoningNode(object):
 			return
 
 		#check the delay between the depth message and the DVL
-		dd_delay = (depth_msg.header.stamp - dvl_msg.header.stamp).to_sec()
+		dd_delay = to_sec(depth_msg.header.stamp) - to_sec(dvl_msg.header.stamp)
 		#print(dd_delay)
 		if abs(dd_delay) > 1.0:
 			logdebug("Missing depth message for {}".format(dd_delay))
@@ -181,13 +182,13 @@ class DeadReckoningNode(object):
 		self.send_odometry(vel,rot,dvl_msg.header.stamp,depth_msg.depth)
 
 
-	def send_odometry(self,vel:np.array,rot:gtsam.Rot3,dvl_time:rospy.Time,depth:float)->None:
+	def send_odometry(self,vel:np.array,rot:gtsam.Rot3,dvl_time,depth:float)->None:
 		"""Package the odometry given all the DVL, rotation matrix, and depth
 
 		Args:
 			vel (np.array): a numpy array (1D) of the DVL velocities
 			rot (gtsam.Rot3): the rotation matrix of the vehicle
-			dvl_time (rospy.Time): the time stamp for the DVL message
+			dvl_time: the time stamp for the DVL message (builtin_interfaces/Time)
 			depth (float): vehicle depth
 		"""
 
@@ -195,7 +196,7 @@ class DeadReckoningNode(object):
 		if np.any(np.abs(vel) > self.dvl_max_velocity):
 			if self.pose:
 
-				self.dvl_error_timer += (dvl_time - self.prev_time).to_sec()
+				self.dvl_error_timer += (to_sec(dvl_time) - to_sec(self.prev_time))
 				if self.dvl_error_timer > 5.0:
 					logwarn(
 						"DVL velocity ({:.1f}, {:.1f}, {:.1f}) exceeds max velocity {:.1f} for {:.1f} secs.".format(
@@ -214,7 +215,7 @@ class DeadReckoningNode(object):
 
 		if self.pose:
 			# figure out how far we moved in the body frame using the DVL message
-			dt = (dvl_time - self.prev_time).to_sec()
+			dt = to_sec(dvl_time) - to_sec(self.prev_time)
 			dv = (vel + self.prev_vel) * 0.5
 			trans = dv * dt
 
@@ -249,7 +250,7 @@ class DeadReckoningNode(object):
 		if not self.keyframes:
 			new_keyframe = True
 		else:
-			duration = self.prev_time.to_sec() - self.keyframes[-1][0]
+			duration = to_sec(self.prev_time) - self.keyframes[-1][0]
 			if duration > self.keyframe_duration:
 				odom = self.keyframes[-1][1].between(self.pose)
 				odom = g2n(odom)
@@ -263,7 +264,7 @@ class DeadReckoningNode(object):
 					new_keyframe = True
 
 		if new_keyframe:
-			self.keyframes.append((self.prev_time.to_sec(), self.pose))
+			self.keyframes.append((to_sec(self.prev_time), self.pose))
 		self.publish_pose(new_keyframe)
 
 
@@ -277,7 +278,7 @@ class DeadReckoningNode(object):
 		if self.pose is None:
 			return
 
-		header = rospy.Header()
+		header = Header()
 		header.stamp = self.prev_time
 		header.frame_id = "odom"
 
@@ -294,18 +295,18 @@ class DeadReckoningNode(object):
 		# odom_msg.twist.twist.angular.x = self.prev_omega[0]
 		# odom_msg.twist.twist.angular.y = self.prev_omega[1]
 		# odom_msg.twist.twist.angular.z = self.prev_omega[2]
-		odom_msg.twist.twist.linear.x = 0
-		odom_msg.twist.twist.linear.y = 0
-		odom_msg.twist.twist.linear.z = 0
-		odom_msg.twist.twist.angular.x = 0
-		odom_msg.twist.twist.angular.y = 0
-		odom_msg.twist.twist.angular.z = 0
+		odom_msg.twist.twist.linear.x = 0.0
+		odom_msg.twist.twist.linear.y = 0.0
+		odom_msg.twist.twist.linear.z = 0.0
+		odom_msg.twist.twist.angular.x = 0.0
+		odom_msg.twist.twist.angular.y = 0.0
+		odom_msg.twist.twist.angular.z = 0.0
 		self.odom_pub.publish(odom_msg)
 
 		p = odom_msg.pose.pose.position
 		q = odom_msg.pose.pose.orientation
 		self.tf.sendTransform(
-			(p.x, p.y, p.z), (q.x, q.y, q.z, q.w), header.stamp, "base_link", "odom"
+			make_transform((p.x, p.y, p.z), (q.x, q.y, q.z, q.w), header.stamp, "odom", "base_link")
 		)
 		if publish_traj:
 			traj = np.array([g2n(pose) for _, pose in self.keyframes])

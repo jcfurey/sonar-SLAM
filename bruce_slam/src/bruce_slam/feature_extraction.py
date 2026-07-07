@@ -1,16 +1,13 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 import numpy as np
 import cv2
-import rospy
 from sensor_msgs.msg import PointCloud2, Image
 import cv_bridge
-import ros_numpy
 
 from bruce_slam.utils.io import *
 from bruce_slam.utils.topics import *
 from bruce_slam.utils.conversions import *
 from bruce_slam.utils.visualization import apply_custom_colormap
-#from bruce_slam.feature import FeatureExtraction
 from bruce_slam import pcl
 import matplotlib.pyplot as plt
 from sonar_oculus.msg import OculusPing, OculusPingUncompressed
@@ -21,9 +18,8 @@ from .sonar import *
 
 from bruce_slam.CFAR import CFAR
 
-#from bruce_slam.bruce_slam import sonar
 
-class FeatureExtraction(object):
+class FeatureExtraction(BruceNode):
     '''Class to handle extracting features from Sonar images using CFAR
     subsribes to the sonar driver and publishes a point cloud
     '''
@@ -45,7 +41,7 @@ class FeatureExtraction(object):
         self.threshold = 0
         self.cimg = None
 
-        #default parameters for point cloud 
+        #default parameters for point cloud
         self.colormap = "RdBu_r"
         self.pub_rect = True
         self.resolution = 0.5
@@ -80,59 +76,62 @@ class FeatureExtraction(object):
         '''
         self.detector = CFAR(self.Ntc, self.Ngc, self.Pfa, self.rank)
 
-    def init_node(self, ns="~"):
+    def init_node(self, node_name="feature_extraction_node"):
+
+        # initialise the underlying rclpy node
+        BruceNode.__init__(self, node_name)
 
         #read in CFAR parameters
-        self.Ntc = rospy.get_param(ns + "CFAR/Ntc")
-        self.Ngc = rospy.get_param(ns + "CFAR/Ngc")
-        self.Pfa = rospy.get_param(ns + "CFAR/Pfa")
-        self.rank = rospy.get_param(ns + "CFAR/rank")
-        self.alg = rospy.get_param(ns + "CFAR/alg", "SOCA")
-        self.threshold = rospy.get_param(ns + "filter/threshold")
+        self.Ntc = self.get_param("CFAR/Ntc")
+        self.Ngc = self.get_param("CFAR/Ngc")
+        self.Pfa = self.get_param("CFAR/Pfa")
+        self.rank = self.get_param("CFAR/rank")
+        self.alg = self.get_param("CFAR/alg", "SOCA")
+        self.threshold = self.get_param("filter/threshold")
 
         #read in PCL downsampling parameters
-        self.resolution = rospy.get_param(ns + "filter/resolution")
-        self.outlier_filter_radius = rospy.get_param(ns + "filter/radius")
-        self.outlier_filter_min_points = rospy.get_param(ns + "filter/min_points")
+        self.resolution = self.get_param("filter/resolution")
+        self.outlier_filter_radius = self.get_param("filter/radius")
+        self.outlier_filter_min_points = self.get_param("filter/min_points")
 
         #parameter to decide how often to skip a frame
-        self.skip = rospy.get_param(ns + "filter/skip")
+        self.skip = self.get_param("filter/skip")
 
         #are the incoming images compressed?
-        self.compressed_images = rospy.get_param(ns + "compressed_images")
+        self.compressed_images = self.get_param("compressed_images")
 
         #cv bridge
         self.BridgeInstance = cv_bridge.CvBridge()
-        
+
         #read in the format
-        self.coordinates = rospy.get_param(
-            ns + "visualization/coordinates", "cartesian"
+        self.coordinates = self.get_param(
+            "visualization/coordinates", "cartesian"
         )
 
         #vis parameters
-        self.radius = rospy.get_param(ns + "visualization/radius")
-        self.color = rospy.get_param(ns + "visualization/color")
+        self.radius = self.get_param("visualization/radius")
+        self.color = self.get_param("visualization/color")
 
         #sonar subsciber
         if self.compressed_images:
-            self.sonar_sub = rospy.Subscriber(
-                SONAR_TOPIC, OculusPing, self.callback, queue_size=10)
+            self.sonar_sub = self.create_subscription(
+                OculusPing, SONAR_TOPIC, self.callback, 10)
         else:
-            self.sonar_sub = rospy.Subscriber(
-                SONAR_TOPIC_UNCOMPRESSED, OculusPingUncompressed, self.callback, queue_size=10)
+            self.sonar_sub = self.create_subscription(
+                OculusPingUncompressed, SONAR_TOPIC_UNCOMPRESSED, self.callback, 10)
 
         #feature publish topic
-        self.feature_pub = rospy.Publisher(
-            SONAR_FEATURE_TOPIC, PointCloud2, queue_size=10)
+        self.feature_pub = self.create_publisher(
+            PointCloud2, SONAR_FEATURE_TOPIC, 10)
 
         #vis publish topic
-        self.feature_img_pub = rospy.Publisher(
-            SONAR_FEATURE_IMG_TOPIC, Image, queue_size=10)
+        self.feature_img_pub = self.create_publisher(
+            Image, SONAR_FEATURE_IMG_TOPIC, 10)
 
         self.configure()
 
     def generate_map_xy(self, ping):
-        '''Generate a mesh grid map for the sonar image, this enables converison to cartisian from the 
+        '''Generate a mesh grid map for the sonar image, this enables converison to cartisian from the
         source polar images
 
         ping: OculusPing message
@@ -150,7 +149,7 @@ class FeatureExtraction(object):
         if self.res == _res and self.height == _height and self.rows == _rows and self.width == _width and self.cols == _cols:
             return
 
-        #if they have changed do some work    
+        #if they have changed do some work
         self.res, self.height, self.rows, self.width, self.cols = _res, _height, _rows, _width, _cols
 
         #generate the mapping
@@ -211,10 +210,13 @@ class FeatureExtraction(object):
             img = np.frombuffer(sonar_msg.ping.data,np.uint8)
             img = np.array(cv2.imdecode(img,cv2.IMREAD_COLOR)).astype(np.uint8)
             img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            
-        #the image is not compressed, just use the ros numpy package
+
+        #the image is not compressed, just use cv_bridge
         else:
-            img = ros_numpy.image.image_to_numpy(sonar_msg.ping)
+            img = np.array(
+                self.BridgeInstance.imgmsg_to_cv2(sonar_msg.ping, desired_encoding="passthrough"),
+                dtype=np.uint8,
+            )
 
         #generate a mesh grid mapping from polar to cartisian
         self.generate_map_xy(sonar_msg)
@@ -225,10 +227,10 @@ class FeatureExtraction(object):
 
         vis_img = cv2.remap(img, self.map_x, self.map_y, cv2.INTER_LINEAR)
         vis_img = cv2.applyColorMap(vis_img, 2)
-        self.feature_img_pub.publish(ros_numpy.image.numpy_to_image(vis_img, "bgr8"))
+        self.feature_img_pub.publish(self.BridgeInstance.cv2_to_imgmsg(vis_img, encoding="bgr8"))
 
         #convert to cartisian
-        peaks = cv2.remap(peaks, self.map_x, self.map_y, cv2.INTER_LINEAR)        
+        peaks = cv2.remap(peaks, self.map_x, self.map_y, cv2.INTER_LINEAR)
         locs = np.c_[np.nonzero(peaks)]
 
         #convert from image coords to meters

@@ -5,12 +5,11 @@ from matplotlib.patches import Ellipse
 from shapely import geometry
 
 import cv2
-import rospy
-from sensor_msgs.msg import PointCloud2
-import sensor_msgs.point_cloud2 as pc2
+from std_msgs.msg import Header, ColorRGBA
+from sensor_msgs.msg import PointField
+from sensor_msgs_py import point_cloud2 as pc2
 
 from geometry_msgs.msg import Point
-from std_msgs.msg import ColorRGBA
 from visualization_msgs.msg import Marker, MarkerArray
 
 
@@ -104,42 +103,42 @@ def plot_cov_ellipse(pos, cov, nstd=2, ax=None, **kwargs):
 
 def ros_colorline(xyz):
     fields = [
-        pc2.PointField("x", 0, pc2.PointField.FLOAT32, 1),
-        pc2.PointField("y", 4, pc2.PointField.FLOAT32, 1),
-        pc2.PointField("z", 8, pc2.PointField.FLOAT32, 1),
-        pc2.PointField("i", 12, pc2.PointField.FLOAT32, 1),
+        PointField(name="x", offset=0, datatype=PointField.FLOAT32, count=1),
+        PointField(name="y", offset=4, datatype=PointField.FLOAT32, count=1),
+        PointField(name="z", offset=8, datatype=PointField.FLOAT32, count=1),
+        PointField(name="i", offset=12, datatype=PointField.FLOAT32, count=1),
     ]
 
     xyzi = np.c_[xyz, np.array([[i] for i in range(len(xyz))])]
 
-    header = rospy.Header()
+    header = Header()
     return pc2.create_cloud(header, fields, xyzi)
 
 
 def ros_colorline_trajectory(traj):
     fields = [
-        pc2.PointField("x", 0, pc2.PointField.FLOAT32, 1),
-        pc2.PointField("y", 4, pc2.PointField.FLOAT32, 1),
-        pc2.PointField("z", 8, pc2.PointField.FLOAT32, 1),
-        pc2.PointField("roll", 12, pc2.PointField.FLOAT32, 1),
-        pc2.PointField("pitch", 16, pc2.PointField.FLOAT32, 1),
-        pc2.PointField("yaw", 20, pc2.PointField.FLOAT32, 1),
-        pc2.PointField("i", 24, pc2.PointField.FLOAT32, 1),
+        PointField(name="x", offset=0, datatype=PointField.FLOAT32, count=1),
+        PointField(name="y", offset=4, datatype=PointField.FLOAT32, count=1),
+        PointField(name="z", offset=8, datatype=PointField.FLOAT32, count=1),
+        PointField(name="roll", offset=12, datatype=PointField.FLOAT32, count=1),
+        PointField(name="pitch", offset=16, datatype=PointField.FLOAT32, count=1),
+        PointField(name="yaw", offset=20, datatype=PointField.FLOAT32, count=1),
+        PointField(name="i", offset=24, datatype=PointField.FLOAT32, count=1),
     ]
 
     traji = np.c_[traj, np.mgrid[0 : len(traj)]]
 
-    header = rospy.Header()
+    header = Header()
     return pc2.create_cloud(header, fields, traji)
 
 
 colors = {
-    "red": ColorRGBA(1.0, 0.0, 0.0, 1.0),
-    "blue": ColorRGBA(0.0, 0.0, 1.0, 1.0),
-    "green": ColorRGBA(0.0, 1.0, 0.0, 1.0),
-    "white": ColorRGBA(1.0,1.0,1.0,1.0),
-    "yellow": ColorRGBA(1.0,1.0,0.0,1.0),
-    "light_blue":ColorRGBA(.44,.62,.8118,1.0)
+    "red": ColorRGBA(r=1.0, g=0.0, b=0.0, a=1.0),
+    "blue": ColorRGBA(r=0.0, g=0.0, b=1.0, a=1.0),
+    "green": ColorRGBA(r=0.0, g=1.0, b=0.0, a=1.0),
+    "white": ColorRGBA(r=1.0, g=1.0, b=1.0, a=1.0),
+    "yellow": ColorRGBA(r=1.0, g=1.0, b=0.0, a=1.0),
+    "light_blue": ColorRGBA(r=0.44, g=0.62, b=0.8118, a=1.0),
 }
 
 
@@ -155,8 +154,8 @@ def ros_constraints(links):
     marker.color.a = 1.0
 
     for point1, point2, color in links:
-        point1 = Point(point1[0], point1[1], point1[2])
-        point2 = Point(point2[0], point2[1], point2[2])
+        point1 = Point(x=float(point1[0]), y=float(point1[1]), z=float(point1[2]))
+        point2 = Point(x=float(point2[0]), y=float(point2[1]), z=float(point2[2]))
         marker.points.append(point1)
         marker.points.append(point2)
         marker.colors.append(colors[color])

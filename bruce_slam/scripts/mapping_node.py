@@ -1,11 +1,12 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 import threading
 import numpy as np
-import rospy
-from message_filters import TimeSynchronizer, Subscriber, ApproximateTimeSynchronizer
+
+import rclpy
+from message_filters import TimeSynchronizer, Subscriber
 from sensor_msgs.msg import PointCloud2
 from nav_msgs.msg import OccupancyGrid
-from bruce_msgs.srv import GetOccupancyMap, GetOccupancyMapResponse
+from bruce_msgs.srv import GetOccupancyMap
 
 from bruce_slam.utils.topics import *
 from bruce_slam.utils.conversions import *
@@ -13,51 +14,54 @@ from bruce_slam.utils.io import *
 from bruce_slam.mapping import Mapping
 
 
-class MappingNode(Mapping):
+class MappingNode(Mapping, BruceNode):
     def __init__(self):
-        super(MappingNode, self).__init__()
+        Mapping.__init__(self)
 
         self.lock = threading.RLock()
         self.use_slam_traj = True
 
-    def init_node(self, ns="~"):
-        self.use_slam_traj = rospy.get_param(ns + "use_slam_traj", True)
+    def init_node(self, node_name="mapping"):
+        # initialise the underlying rclpy node
+        BruceNode.__init__(self, node_name)
 
-        self.x0, self.y0 = rospy.get_param(ns + "origin")
-        self.width, self.height = rospy.get_param(ns + "size")
-        self.resolution = rospy.get_param(ns + "resolution")
-        self.inc = rospy.get_param(ns + "inc")
+        self.use_slam_traj = self.get_param("use_slam_traj", True)
 
-        self.pub_occupancy1 = rospy.get_param(ns + "pub_occupancy1")
-        self.hit_prob = rospy.get_param(ns + "hit_prob")
-        self.miss_prob = rospy.get_param(ns + "miss_prob")
-        self.inflation_angle = rospy.get_param(ns + "inflation_angle")
-        self.inflation_radius = rospy.get_param(ns + "inflation_range")
+        self.x0, self.y0 = self.get_param("origin")
+        self.width, self.height = self.get_param("size")
+        self.resolution = self.get_param("resolution")
+        self.inc = self.get_param("inc")
 
-        self.pub_occupancy2 = rospy.get_param(ns + "pub_occupancy2")
-        self.inflation_radius = rospy.get_param(ns + "inflation_radius")
-        self.outlier_filter_radius = rospy.get_param(ns + "outlier_filter_radius")
-        self.outlier_filter_min_points = rospy.get_param(
-            ns + "outlier_filter_min_points"
+        self.pub_occupancy1 = self.get_param("pub_occupancy1")
+        self.hit_prob = self.get_param("hit_prob")
+        self.miss_prob = self.get_param("miss_prob")
+        self.inflation_angle = self.get_param("inflation_angle")
+        self.inflation_radius = self.get_param("inflation_range")
+
+        self.pub_occupancy2 = self.get_param("pub_occupancy2")
+        self.inflation_radius = self.get_param("inflation_radius")
+        self.outlier_filter_radius = self.get_param("outlier_filter_radius")
+        self.outlier_filter_min_points = self.get_param(
+            "outlier_filter_min_points"
         )
 
-        self.pub_intensity = rospy.get_param(ns + "pub_intensity")
+        self.pub_intensity = self.get_param("pub_intensity")
 
         # Only update keyframe that has significant movement
-        self.min_translation = rospy.get_param(ns + "min_translation")
-        self.min_rotation = rospy.get_param(ns + "min_rotation")
+        self.min_translation = self.get_param("min_translation")
+        self.min_rotation = self.get_param("min_rotation")
 
-        self.sonar_sub = Subscriber(SONAR_TOPIC, OculusPing)
+        self.sonar_sub = Subscriber(self, OculusPing, SONAR_TOPIC)
         if self.use_slam_traj:
-            self.traj_sub = Subscriber(SLAM_TRAJ_TOPIC, PointCloud2)
+            self.traj_sub = Subscriber(self, PointCloud2, SLAM_TRAJ_TOPIC)
         else:
-            self.traj_sub = Subscriber(LOCALIZATION_TRAJ_TOPIC, PointCloud2)
+            self.traj_sub = Subscriber(self, PointCloud2, LOCALIZATION_TRAJ_TOPIC)
         # Method 1
         if self.pub_occupancy1:
-            self.feature_sub = Subscriber(SONAR_FEATURE_TOPIC, PointCloud2)
+            self.feature_sub = Subscriber(self, PointCloud2, SONAR_FEATURE_TOPIC)
         # Method 2
         if self.pub_occupancy2:
-            self.feature_sub = Subscriber(SLAM_CLOUD_TOPIC, PointCloud2)
+            self.feature_sub = Subscriber(self, PointCloud2, SLAM_CLOUD_TOPIC)
 
         # The time stamps for trajectory and ping have to be exactly the same
         # A big queue_size is required to assure no keyframe is missed especially
@@ -67,25 +71,24 @@ class MappingNode(Mapping):
         )
         self.ts.registerCallback(self.tpf_callback)
 
-        self.intensity_map_pub = rospy.Publisher(
-            MAPPING_INTENSITY_TOPIC, OccupancyGrid, queue_size=1, latch=True
+        self.intensity_map_pub = self.create_publisher(
+            OccupancyGrid, MAPPING_INTENSITY_TOPIC, latched_qos()
         )
-        self.occupancy_map_pub = rospy.Publisher(
-            MAPPING_OCCUPANCY_TOPIC, OccupancyGrid, queue_size=1, latch=True
+        self.occupancy_map_pub = self.create_publisher(
+            OccupancyGrid, MAPPING_OCCUPANCY_TOPIC, latched_qos()
         )
 
-        self.get_map_srv = rospy.Service(ns + "get_map", GetOccupancyMap, self.get_map)
+        self.get_map_srv = self.create_service(GetOccupancyMap, "get_map", self.get_map)
 
         self.configure()
         loginfo("Mapping node is initialized")
 
-    def get_map(self, req):
-        resp = GetOccupancyMapResponse()
+    def get_map(self, request, response):
         with self.lock:
-            occ_msg = self.get_occupancy_grid(req.frames, req.resolution)
-            resp.occ = occ_msg
+            occ_msg = self.get_occupancy_grid(request.frames, request.resolution)
+            response.occ = occ_msg
 
-        return resp
+        return response
 
     @add_lock
     def tpf_callback(self, traj_msg, ping, feature_msg):
@@ -125,12 +128,6 @@ class MappingNode(Mapping):
                     occupancy_msg.header.frame_id = "odom"
                 self.occupancy_map_pub.publish(occupancy_msg)
 
-        # # Why doesn't this work?
-        # # Delete unnecessary ping cached in time synchronizer since we use a big queue.
-        # q = self.ts.queues[1]
-        # self.ts.queues[1] = {
-        #     t: m for t, m in q.items() if t >= ping.header.stamp
-        # }
         self.lock.release()
         if self.save_fig:
             self.save_submaps()
@@ -155,44 +152,22 @@ class MappingNode(Mapping):
         )
 
 
-def offline(args):
-    from localization_node import LocalizationNode
-    from rosgraph_msgs.msg import Clock
-    from bruce_slam.utils import io
+def main(args=None):
+    rclpy.init(args=args)
 
-    io.offline = True
+    node = MappingNode()
+    node.init_node("mapping")
 
-    loc_node = LocalizationNode()
-    loc_node.init_node("/bruce/localization/")
-    clock_pub = rospy.Publisher("/clock", Clock, queue_size=100)
-    for topic, msg in read_bag(args.file, args.start, args.duration, progress=True):
-        while not rospy.is_shutdown():
-            if callback_lock_event.wait(1.0):
-                break
-        if rospy.is_shutdown():
-            break
-
-        if topic == IMU_TOPIC:
-            loc_node.imu_sub.callback(msg)
-        elif topic == DVL_TOPIC:
-            loc_node.dvl_sub.callback(msg)
-        elif topic == DEPTH_TOPIC:
-            loc_node.depth_sub.callback(msg)
-        elif topic == SONAR_TOPIC:
-            node.sonar_sub.callback(msg)
-        clock_pub.publish(Clock(msg.header.stamp))
+    try:
+        loginfo("Start online mapping...")
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":
-    rospy.init_node("mapping", log_level=rospy.INFO)
-
-    node = MappingNode()
-    node.init_node()
-
-    args, _ = common_parser().parse_known_args()
-    if not args.file:
-        loginfo("Start online mapping...")
-        rospy.spin()
-    else:
-        loginfo("Start offline mapping...")
-        offline(args)
+    main()

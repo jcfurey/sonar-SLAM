@@ -1,18 +1,66 @@
-from ctypes import Union
 from typing import Any
 import numpy as np
 import gtsam
 import cv2
 import cv_bridge
-import rospy
-from sensor_msgs.msg import Image, PointCloud2
-import sensor_msgs.point_cloud2 as pc2
-from geometry_msgs.msg import Pose
-import ros_numpy
 import struct
 
+from std_msgs.msg import Header
+from sensor_msgs.msg import Image, PointCloud2, PointField
+from geometry_msgs.msg import Pose, PoseStamped, Quaternion, TransformStamped
+from sensor_msgs_py import point_cloud2 as pc2
+
+from sonar_oculus.msg import OculusPing, OculusPingUncompressed
 
 from .topics import *
+
+
+def to_sec(stamp) -> float:
+    """Return floating point seconds from a ROS 2 time-like object.
+
+    Handles builtin_interfaces/Time (``.sec`` / ``.nanosec``), rclpy ``Time`` and
+    ``Duration`` (``.nanoseconds``) as well as plain numbers.
+
+    Args:
+        stamp: a time-like object
+
+    Returns:
+        float: the time in seconds
+    """
+
+    if hasattr(stamp, "nanoseconds"):  # rclpy Time / Duration
+        return stamp.nanoseconds * 1e-9
+    if hasattr(stamp, "sec") and hasattr(stamp, "nanosec"):  # builtin_interfaces/Time
+        return stamp.sec + stamp.nanosec * 1e-9
+    return float(stamp)
+
+
+def make_transform(translation, quaternion, stamp, parent_frame: str, child_frame: str) -> TransformStamped:
+    """Build a geometry_msgs/TransformStamped for a tf2 broadcaster.
+
+    Args:
+        translation: (x, y, z) translation
+        quaternion: (x, y, z, w) rotation
+        stamp: the message time stamp (builtin_interfaces/Time)
+        parent_frame (str): the parent (reference) frame id
+        child_frame (str): the child frame id
+
+    Returns:
+        TransformStamped: the populated transform message
+    """
+
+    t = TransformStamped()
+    t.header.stamp = stamp
+    t.header.frame_id = parent_frame
+    t.child_frame_id = child_frame
+    t.transform.translation.x = float(translation[0])
+    t.transform.translation.y = float(translation[1])
+    t.transform.translation.z = float(translation[2])
+    t.transform.rotation.x = float(quaternion[0])
+    t.transform.rotation.y = float(quaternion[1])
+    t.transform.rotation.z = float(quaternion[2])
+    t.transform.rotation.w = float(quaternion[3])
+    return t
 
 
 def X(x:int) -> gtsam.symbol:
@@ -159,7 +207,7 @@ def r2g(ros_msg) -> gtsam.Pose3:
         gtsam.Pose3: the input data packaged as a gtsam 3D pose
     """
 
-    if ros_msg._type == "geometry_msgs/Pose":
+    if isinstance(ros_msg, Pose):
         x = ros_msg.position.x
         y = ros_msg.position.y
         z = ros_msg.position.z
@@ -170,9 +218,9 @@ def r2g(ros_msg) -> gtsam.Pose3:
         return gtsam.Pose3(
             n2g([qx, qy, qz, qw], "Quaternion"), n2g([x, y, z], "Point3")
         )
-    elif ros_msg._type == "geometry_msgs/PoseStamped":
+    elif isinstance(ros_msg, PoseStamped):
         return r2g(ros_msg.pose)
-    elif ros_msg._type == "geometry_msgs/Quaternion":
+    elif isinstance(ros_msg, Quaternion):
         return n2g([ros_msg.x, ros_msg.y, ros_msg.z, ros_msg.w], "Quaternion")
     else:
         raise NotImplementedError(
@@ -214,11 +262,11 @@ def g2r(gtsam_obj:gtsam.Pose3) -> Pose:
 bridge = cv_bridge.CvBridge()
 
 
-def r2n(ros_msg:OculusPing) -> np.array:
-    """Convert a ros message of type OculusPing to a numpy array
+def r2n(ros_msg) -> np.array:
+    """Convert a ros message of type OculusPing (or Image/PointCloud2) to a numpy array
 
     Args:
-        ros_msg (OculusPing): the input sonar message
+        ros_msg: the input sonar message
 
     Raises:
         NotImplementedError: catch the wrong types
@@ -227,42 +275,67 @@ def r2n(ros_msg:OculusPing) -> np.array:
         np.array: the image data in numpy array form
     """
 
-    if ros_msg._type == "sonar_oculus/OculusPing":
-        
+    if isinstance(ros_msg, (OculusPing, OculusPingUncompressed)):
+
         img = r2n(ros_msg.ping)
         img = np.clip(
             cv2.pow(img / 255.0, 255.0 / ros_msg.fire_msg.gamma) * 255.0, 0, 255
         )
         return np.float32(img)
-    elif ros_msg._type == "sensor_msgs/Image":
+    elif isinstance(ros_msg, Image):
         img = bridge.imgmsg_to_cv2(ros_msg, desired_encoding="passthrough")
         return np.array(img, "uint8")
-    elif ros_msg._type == "sensor_msgs/PointCloud2":
+    elif isinstance(ros_msg, PointCloud2):
         rows = ros_msg.width
         cols = sum(f.count for f in ros_msg.fields)
-        return np.array([p for p in pc2.read_points(ros_msg)]).reshape(rows, cols)
+        field_names = [f.name for f in ros_msg.fields]
+        points = pc2.read_points(ros_msg, field_names=field_names, skip_nans=False)
+        arr = np.array([[p[name] for name in field_names] for p in points])
+        return arr.reshape(rows, cols)
     else:
         raise NotImplementedError(
             "Not implemented from {} to numpy".format(str(type(ros_msg)))
         )
 
-def build_rgb_cloud(arr:np.array) -> pc2:
+
+def pointcloud2_to_xyz_array(msg: PointCloud2) -> np.ndarray:
+    """Extract the (x, y, z) channels of a PointCloud2 as an Nx3 float array.
+
+    Replaces ros_numpy.point_cloud2.pointcloud2_to_xyz_array (unavailable in ROS 2).
+    NaN points are preserved (skip_nans=False) so downstream logic that flags empty
+    frames continues to work.
+
+    Args:
+        msg (PointCloud2): the input point cloud
+
+    Returns:
+        np.ndarray: an Nx3 array of xyz coordinates
+    """
+
+    points = pc2.read_points(msg, field_names=("x", "y", "z"), skip_nans=False)
+    if isinstance(points, np.ndarray) and points.dtype.names is not None:
+        return np.column_stack((points["x"], points["y"], points["z"])).astype(np.float32)
+    return np.array([[p[0], p[1], p[2]] for p in points], dtype=np.float32)
+
+
+def build_rgb_cloud(arr:np.array) -> PointCloud2:
     """Convert an array of [xyz,rgb] to a ROS point cloud with colors
 
     Args:
         arr (np.array): the input array
 
     Returns:
-        pc2: a ROS point cloud 2
+        PointCloud2: a ROS point cloud 2
     """
 
     # define the point cloud fields and header
-    header = rospy.Header()
-    fields = [pc2.PointField('x', 0, pc2.PointField.FLOAT32, 1),
-            pc2.PointField('y', 4, pc2.PointField.FLOAT32, 1),
-            pc2.PointField('z', 8, pc2.PointField.FLOAT32, 1),
-            pc2.PointField('rgb', 12, pc2.PointField.UINT32, 1),
-            ]
+    header = Header()
+    fields = [
+        PointField(name='x', offset=0, datatype=PointField.FLOAT32, count=1),
+        PointField(name='y', offset=4, datatype=PointField.FLOAT32, count=1),
+        PointField(name='z', offset=8, datatype=PointField.FLOAT32, count=1),
+        PointField(name='rgb', offset=12, datatype=PointField.UINT32, count=1),
+    ]
 
     # parse out and convert the RGB values to RGBA
     points = []
@@ -271,7 +344,7 @@ def build_rgb_cloud(arr:np.array) -> pc2:
         rgb = struct.unpack('I', struct.pack('BBBB', b, g, r, 255))[0]
         points.append( [row[0], row[1], 0., rgb] )
     return pc2.create_cloud(header, fields, points)
-    
+
 
 def n2r(numpy_arr:np.array, msg:any) -> any:
     """Package a nump array as the target ros message type in msg
@@ -286,24 +359,24 @@ def n2r(numpy_arr:np.array, msg:any) -> any:
     Returns:
         any: the output message
     """
-    
+
     if msg == "Image":
         if numpy_arr.ndim == 2 or numpy_arr.shape[2] == 1:
-            return bridge.cv2_to_imgmsg(numpy_arr, encoding="8U")
+            return bridge.cv2_to_imgmsg(numpy_arr, encoding="mono8")
         else:
             return bridge.cv2_to_imgmsg(numpy_arr, encoding="rgb8")
     elif msg == "ImageBGR":
         return bridge.cv2_to_imgmsg(numpy_arr, encoding="bgr8")
     elif msg == "PointCloudXYZ":
-        header = rospy.Header()
+        header = Header()
         return pc2.create_cloud_xyz32(header, np.array(numpy_arr))
     elif msg == "PointCloudXYZI":
-        header = rospy.Header()
+        header = Header()
         fields = [
-            pc2.PointField("x", 0, pc2.PointField.FLOAT32, 1),
-            pc2.PointField("y", 4, pc2.PointField.FLOAT32, 1),
-            pc2.PointField("z", 8, pc2.PointField.FLOAT32, 1),
-            pc2.PointField("i", 12, pc2.PointField.FLOAT32, 1),
+            PointField(name="x", offset=0, datatype=PointField.FLOAT32, count=1),
+            PointField(name="y", offset=4, datatype=PointField.FLOAT32, count=1),
+            PointField(name="z", offset=8, datatype=PointField.FLOAT32, count=1),
+            PointField(name="i", offset=12, datatype=PointField.FLOAT32, count=1),
         ]
         return pc2.create_cloud(header, fields, np.array(numpy_arr))
     elif msg == "PointCloudXYZRGB":
