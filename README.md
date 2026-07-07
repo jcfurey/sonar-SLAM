@@ -55,40 +55,27 @@ ament_cmake, ament_cmake_auto, ament_cmake_python
 colcon
 pybind11_vendor
 PCL (libpcl-all-dev)
-libpointmatcher   # build from source, see below
+libnabo + libpointmatcher   # vendored as git submodules under third_party/
 ```
 
 # Installation
 
+`libnabo` and `libpointmatcher` (the C++ ICP dependency) are vendored as git
+submodules under `third_party/`. Both ship a colcon-compatible `package.xml`, so
+colcon builds them automatically in dependency order (libnabo → libpointmatcher →
+the bruce packages) — no separate `make install` step.
+
 - Install ROS 2 and source it (`source /opt/ros/$ROS_DISTRO/setup.bash`).
 - Install the Python dependencies above (e.g. `pip install gtsam scikit-learn shapely tqdm`).
-- Create a workspace and clone this repo into `your_ws/src`.
-- Build and **install** `libnabo` then `libpointmatcher` so CMake can
-  `find_package(libpointmatcher)`. These are plain CMake libraries (not ROS/colcon
-  packages), so build them standalone and `make install` (default prefix
-  `/usr/local`, which `find_package` searches) — do **not** put them under the
-  colcon `src/` tree:
+- Clone this repo **with submodules** into `your_ws/src`:
 ```
-sudo apt install libeigen3-dev libboost-all-dev
-
-# libnabo (dependency of libpointmatcher)
-git clone https://github.com/ethz-asl/libnabo.git
-cmake -S libnabo -B libnabo/build -DCMAKE_BUILD_TYPE=Release
-cmake --build libnabo/build -j"$(nproc)"
-sudo cmake --install libnabo/build
-
-# libpointmatcher
-git clone https://github.com/ethz-asl/libpointmatcher.git
-cmake -S libpointmatcher -B libpointmatcher/build -DCMAKE_BUILD_TYPE=Release
-cmake --build libpointmatcher/build -j"$(nproc)"
-sudo cmake --install libpointmatcher/build
+cd your_ws/src
+git clone --recurse-submodules <this-repo-url>
+# if you already cloned without --recurse-submodules:
+git submodule update --init --recursive
 ```
-  The upstream project historically pinned libpointmatcher to
-  `d478ef2eb33894d5f1fe84d8c62cec2fc6da818f`; on recent distros (e.g. Ubuntu 24.04
-  / Jazzy) that old revision may not compile — use a current release tag if so.
-  If you install to a non-standard prefix, add it to `CMAKE_PREFIX_PATH` before
-  building.
-- Install remaining ROS dependencies from the workspace root:
+- Install the remaining dependencies (this also pulls boost / eigen / yaml-cpp /
+  PCL required by the vendored libraries):
 ```
 rosdep install --from-paths src --ignore-src -r -y
 ```
