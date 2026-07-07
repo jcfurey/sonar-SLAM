@@ -14,28 +14,33 @@
   <buildtool_depend>ament_cmake_auto</buildtool_depend>
   <buildtool_depend>ament_cmake_python</buildtool_depend>
 
+  <!-- C++ build dependencies for the pybind11 modules (pcl, cfar) only -->
   <build_depend>pybind11_vendor</build_depend>
   <build_depend>python3-dev</build_depend>
   <build_depend>libpointmatcher</build_depend>
   <build_depend>libpcl-all-dev</build_depend>
+  <build_depend>eigen</build_depend>
 
-  <depend>rclpy</depend>
-  <depend>std_msgs</depend>
-  <depend>sensor_msgs</depend>
-  <depend>geometry_msgs</depend>
-  <depend>nav_msgs</depend>
-  <depend>visualization_msgs</depend>
-  <depend>rosgraph_msgs</depend>
-  <depend>tf2_ros</depend>
-  <depend>cv_bridge</depend>
-  <depend>message_filters</depend>
-  <depend>bruce_msgs</depend>
-  <depend>sonar_oculus</depend>
-  <depend>rti_dvl</depend>
-  <depend>bar30_depth</depend>
-  <depend>kvh_gyro</depend>
-
+  <!-- ROS interfaces / libraries used by the Python nodes at runtime only.
+       These are intentionally exec_depend (not depend): the C++ does not build
+       against them, so they must not be find_package()'d at configure time
+       (which would, e.g., pull cv_bridge -> OpenCV -> CUDA into the build). -->
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>sensor_msgs_py</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>visualization_msgs</exec_depend>
+  <exec_depend>rosgraph_msgs</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>cv_bridge</exec_depend>
+  <exec_depend>message_filters</exec_depend>
+  <exec_depend>bruce_msgs</exec_depend>
+  <exec_depend>sonar_oculus</exec_depend>
+  <exec_depend>rti_dvl</exec_depend>
+  <exec_depend>bar30_depth</exec_depend>
+  <exec_depend>kvh_gyro</exec_depend>
   <exec_depend>rosidl_runtime_py</exec_depend>
   <exec_depend>ros2launch</exec_depend>
   <exec_depend>rosbag2_py</exec_depend>

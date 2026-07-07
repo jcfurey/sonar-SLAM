@@ -17,6 +17,7 @@ ament_auto_find_build_dependencies()
 find_package(ament_cmake_python REQUIRED)
 find_package(Python3 REQUIRED COMPONENTS Interpreter Development)
 find_package(pybind11 REQUIRED)
+find_package(Eigen3 REQUIRED)
 find_package(PCL REQUIRED)
 find_package(libpointmatcher REQUIRED)
 
@@ -30,13 +31,20 @@ pybind11_add_module(pcl src/${PROJECT_NAME}/cpp/pcl.cpp)
 target_include_directories(pcl PRIVATE
   ${PCL_INCLUDE_DIRS}
   ${libpointmatcher_INCLUDE_DIRS}
+  ${EIGEN3_INCLUDE_DIRS}
+  ${EIGEN3_INCLUDE_DIR}
 )
 target_link_libraries(pcl PRIVATE
   ${PCL_LIBRARIES}
   ${libpointmatcher_LIBRARIES}
 )
 
+# cfar.cpp only needs Eigen (pulled in globally in the old catkin build)
 pybind11_add_module(cfar src/${PROJECT_NAME}/cpp/cfar.cpp)
+target_include_directories(cfar PRIVATE
+  ${EIGEN3_INCLUDE_DIRS}
+  ${EIGEN3_INCLUDE_DIR}
+)
 
 # Install the compiled extension modules next to the Python package so that
 # `from bruce_slam import pcl` / `from bruce_slam import cfar` resolve.
