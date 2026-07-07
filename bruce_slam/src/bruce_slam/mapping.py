@@ -232,10 +232,9 @@ class Mapping(object):
             #############################################
             if self.save_fig:
                 # gamma-corrected intensity image from the normalized SonarPing
-                gamma = ping.fire_msg.gamma if ping.fire_msg.gamma else 255.0
-                keyframe.cimg = np.clip(
-                    cv2.pow(ping.image / 255.0, 255.0 / gamma) * 255.0, 0, 255
-                ).astype(np.float32)
+                keyframe.cimg = apply_gamma(ping.image, ping.fire_msg.gamma).astype(
+                    np.float32
+                )
                 keyframe.limg = logodds
             #############################################
 
@@ -243,7 +242,7 @@ class Mapping(object):
             self.point_cloud = points
 
         if self.pub_intensity:
-            intensity = ping.image[::r_skip, ::c_skip]
+            intensity = ping.image[:: self.oculus_r_skip, :: self.oculus_c_skip]
             keyframe.intensity = intensity.ravel()
 
         self.fit_grid(keyframe)

@@ -1,9 +1,3 @@
-from rti_dvl.msg import DVL
-from sensor_msgs.msg import Imu
-from bar30_depth.msg import Depth
-from sonar_oculus.msg import OculusPing
-
-
 """
 Topics for the bruce_slam project
 """

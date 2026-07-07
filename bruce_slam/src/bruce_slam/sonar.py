@@ -209,9 +209,11 @@ class OculusProperty(object):
             self.bearings = np.array(ping.bearings, np.float32)
             self.horizontal_aperture = abs(self.bearings[-1] - self.bearings[0])
             self.angular_resolution = self.horizontal_aperture / self.num_bearings
-            self.vertical_aperture = OculusProperty.OCULUS_VERTICAL_APERTURE[
-                self.fire_msg.mode
-            ]
+            # default to the low-frequency aperture for unknown fire modes
+            # (e.g. Oculus flexi mode 0) instead of raising KeyError
+            self.vertical_aperture = OculusProperty.OCULUS_VERTICAL_APERTURE.get(
+                self.fire_msg.mode, OculusProperty.OCULUS_VERTICAL_APERTURE[1]
+            )
 
             self.b2c = interp1d(
                 self.bearings,

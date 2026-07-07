@@ -49,15 +49,16 @@ class DeadReckoningNode(BruceNode):
 		self.rov_id = ""
 
 
-	def init_node(self, node_name="localization")->None:
+	def init_node(self, node_name="localization", **node_kwargs)->None:
 		"""Init the node, fetch all paramaters from ROS
 
 		Args:
 			node_name (str, optional): The ROS 2 node name. Defaults to "localization".
+			**node_kwargs: extra rclpy Node kwargs (e.g. parameter_overrides).
 		"""
 
 		# initialise the underlying rclpy node
-		BruceNode.__init__(self, node_name)
+		BruceNode.__init__(self, node_name, **node_kwargs)
 
 		# Parameters for Node
 		self.imu_pose = self.get_param("imu_pose")
@@ -74,9 +75,12 @@ class DeadReckoningNode(BruceNode):
 		self.depth_adapter, depth_type = make_adapter(
 			DEPTH_ADAPTERS, self.get_param("depth/driver", "bar30"), self)
 
-		# Subscribers and caches
-		self.dvl_sub = Subscriber(self, dvl_type, self.get_param("dvl/topic", DVL_TOPIC))
-		self.depth_sub = Subscriber(self, depth_type, self.get_param("depth/topic", DEPTH_TOPIC))
+		# Subscribers and caches. The resolved topics are kept as attributes so
+		# the offline bag pump can route on the actual configured names.
+		self.dvl_topic = self.get_param("dvl/topic", DVL_TOPIC)
+		self.depth_topic = self.get_param("depth/topic", DEPTH_TOPIC)
+		self.dvl_sub = Subscriber(self, dvl_type, self.dvl_topic)
+		self.depth_sub = Subscriber(self, depth_type, self.depth_topic)
 		self.depth_cache = Cache(self.depth_sub, 1)
 
 		# Use point cloud for visualization
@@ -91,10 +95,12 @@ class DeadReckoningNode(BruceNode):
 		self.use_imu = self.get_param("use_imu", True)    # VN100 MEMS IMU
 
 		# only subscribe to the IMU if we intend to use it (standard sensor_msgs/Imu)
+		self.imu_topic = None
 		if self.use_imu:
 			imu_topic = self.get_param("imu/topic", "")
 			if not imu_topic:
 				imu_topic = IMU_TOPIC if self.get_param("imu_version") == 1 else IMU_TOPIC_MK_II
+			self.imu_topic = imu_topic
 			self.imu_sub = Subscriber(self, Imu, imu_topic)
 
 		# define the callback based on the available orientation sources

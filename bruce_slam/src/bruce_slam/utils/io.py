@@ -1,5 +1,3 @@
-import os
-import time
 import timeit
 from functools import wraps
 import numpy as np
@@ -55,12 +53,22 @@ class BruceNode(Node):
             **kwargs,
         )
 
-    def get_param(self, name: str, default=None):
+    # sentinel distinguishing "no default supplied" from an explicit None
+    _REQUIRED = object()
+
+    def get_param(self, name: str, default=_REQUIRED):
         """Fetch a parameter value, declaring it if necessary.
 
         Args:
             name (str): the parameter name (``~foo`` and ``a/b`` are accepted)
-            default: value to declare/return when the parameter is not provided
+            default: value to declare/return when the parameter is not provided.
+                Omit it to make the parameter required.
+
+        Raises:
+            KeyError: if the parameter is required (no default) and not set —
+                mirroring ``rospy.get_param``'s behaviour. (Declaring a missing
+                parameter with a ``None`` default would make rclpy raise an
+                opaque type-inference error instead.)
 
         Returns:
             the parameter value
@@ -68,6 +76,11 @@ class BruceNode(Node):
 
         name = name.lstrip("~").replace("/", ".")
         if not self.has_parameter(name):
+            if default is BruceNode._REQUIRED or default is None:
+                raise KeyError(
+                    "Required parameter '{}' is not set for node '{}'. "
+                    "Check the YAML/launch configuration.".format(name, self.get_name())
+                )
             self.declare_parameter(name, default)
         return self.get_parameter(name).value
 
@@ -252,30 +265,15 @@ def read_bag(file, start=None, duration=None, progress=True, topics=None):
     del reader
 
 
-def get_log_dir():
-    return os.path.join(os.path.expanduser("~"), ".ros", "log")
-
-
-def create_log(suffix, timestamp=None):
-    import datetime
-
-    if timestamp is None:
-        timestamp = time.time()
-
-    now = datetime.datetime.fromtimestamp(timestamp)
-    log_name = now.strftime("%Y-%m-%d-%H-%M-%S-") + suffix
-
-    log_dir = get_log_dir()
-
-    return os.path.join(log_dir, log_name)
-
-
 def load_nav_data(file, start=0, duration=None, progress=True):
     import gtsam
     from .topics import IMU_TOPIC, DVL_TOPIC, DEPTH_TOPIC
 
     dvl, depth, imu = [], [], []
-    for topic, msg in read_bag(file, start, duration, progress):
+    # filter at the storage layer so large unused topics (sonar images)
+    # are never deserialized
+    nav_topics = [IMU_TOPIC, DVL_TOPIC, DEPTH_TOPIC]
+    for topic, msg in read_bag(file, start, duration, progress, topics=nav_topics):
         t = to_sec(msg.header.stamp)
         if topic == DVL_TOPIC:
             dvl.append(

@@ -17,15 +17,16 @@ class GyroFilter(BruceNode):
 		# start the euler angles
 		self.roll, self.yaw, self.pitch = 90.,0.,0.
 
-	def init_node(self, node_name:str="gyro_fusion")->None:
+	def init_node(self, node_name:str="gyro_fusion", **node_kwargs)->None:
 		"""Node init, get all the relevant params etc.
 
 		Args:
 			node_name (str, optional): The ROS 2 node name. Defaults to "gyro_fusion".
+			**node_kwargs: extra rclpy Node kwargs (e.g. parameter_overrides).
 		"""
 
 		# initialise the underlying rclpy node
-		BruceNode.__init__(self, node_name)
+		BruceNode.__init__(self, node_name, **node_kwargs)
 
 		# define the rotation offset matrix for the gyro, this makes the gyro frame align with the sonar frame
 		x = self.get_param("offset/x")
@@ -41,11 +42,14 @@ class GyroFilter(BruceNode):
 		# gyro driver (pluggable adapter + configurable topic)
 		self.gyro_adapter, gyro_type = make_adapter(
 			GYRO_ADAPTERS, self.get_param("gyro/driver", "kvh_gyro"), self)
+		self.gyro_topic = self.get_param("gyro/topic", GYRO_TOPIC)
 
-		# define tf transformer and gyro sub
-		self.odom_pub = self.create_publisher(Odometry, GYRO_INTEGRATION_TOPIC, self.sensor_rate+50)
+		# define tf transformer and gyro sub. QoS depth must be an int (a float
+		# sensor_rate in the YAML would otherwise make rclpy raise).
+		queue_depth = int(self.sensor_rate) + 50
+		self.odom_pub = self.create_publisher(Odometry, GYRO_INTEGRATION_TOPIC, queue_depth)
 		self.gyro_sub = self.create_subscription(
-			gyro_type, self.get_param("gyro/topic", GYRO_TOPIC), self.callback, self.sensor_rate+50)
+			gyro_type, self.gyro_topic, self.callback, queue_depth)
 
 		loginfo("Gyro filtering node is initialized")
 

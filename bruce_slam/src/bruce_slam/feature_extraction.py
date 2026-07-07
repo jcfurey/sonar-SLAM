@@ -7,10 +7,8 @@ import cv_bridge
 from bruce_slam.utils.io import *
 from bruce_slam.utils.topics import *
 from bruce_slam.utils.conversions import *
-from bruce_slam.utils.visualization import apply_custom_colormap
 from bruce_slam import pcl
 from bruce_slam.sensors import SONAR_ADAPTERS, make_adapter
-import matplotlib.pyplot as plt
 from scipy.interpolate import interp1d
 
 from .utils import *
@@ -61,9 +59,11 @@ class FeatureExtraction(BruceNode):
         self.map_x = None
         self.map_y = None
         self.f_bearings = None
-        self.to_rad = lambda bearing: bearing * np.pi / 18000
         self.REVERSE_Z = 1
         self.maxRange = None
+
+        # frame counter for skip logic on drivers without a ping id
+        self.frame_count = 0
 
         #which vehicle is being used
         self.compressed_images = True
@@ -76,10 +76,10 @@ class FeatureExtraction(BruceNode):
         '''
         self.detector = CFAR(self.Ntc, self.Ngc, self.Pfa, self.rank)
 
-    def init_node(self, node_name="feature_extraction_node"):
+    def init_node(self, node_name="feature_extraction_node", **node_kwargs):
 
         # initialise the underlying rclpy node
-        BruceNode.__init__(self, node_name)
+        BruceNode.__init__(self, node_name, **node_kwargs)
 
         #read in CFAR parameters
         self.Ntc = self.get_param("CFAR/Ntc")
@@ -113,14 +113,25 @@ class FeatureExtraction(BruceNode):
         self.color = self.get_param("visualization/color")
 
         # sonar driver (pluggable adapter + configurable topic). If sonar/driver
-        # is unset it defaults to the Oculus adapter matching compressed_images.
+        # is unset it defaults to the Oculus adapter matching compressed_images;
+        # the default TOPIC then follows the resolved driver (not compressed_images)
+        # so the two knobs cannot silently disagree.
         sonar_driver = self.get_param("sonar/driver", "")
         if not sonar_driver:
             sonar_driver = "oculus_compressed" if self.compressed_images else "oculus_uncompressed"
         sonar_topic = self.get_param("sonar/topic", "")
         if not sonar_topic:
-            sonar_topic = SONAR_TOPIC if self.compressed_images else SONAR_TOPIC_UNCOMPRESSED
+            if sonar_driver == "oculus_compressed":
+                sonar_topic = SONAR_TOPIC
+            elif sonar_driver == "oculus_uncompressed":
+                sonar_topic = SONAR_TOPIC_UNCOMPRESSED
+            else:
+                raise ValueError(
+                    "sonar/topic must be set explicitly for sonar driver '{}'".format(sonar_driver)
+                )
         self.sonar_adapter, sonar_type = make_adapter(SONAR_ADAPTERS, sonar_driver, self)
+        # exposed so the offline bag pump can route on the actual configured topic
+        self.sonar_topic = sonar_topic
 
         #sonar subsciber
         self.sonar_sub = self.create_subscription(sonar_type, sonar_topic, self.callback, 10)
@@ -176,9 +187,9 @@ class FeatureExtraction(BruceNode):
         self.map_y = np.asarray(r / self.res, dtype=np.float32)
         self.map_x = np.asarray(f_bearings(b), dtype=np.float32)
 
-    def publish_features(self, ping, points):
-        '''Publish the feature message using the provided parameters in an OculusPing message
-        ping: OculusPing message
+    def publish_features(self, stamp, points):
+        '''Publish the feature message using the provided parameters
+        stamp: the time stamp of the source sonar image
         points: points to be converted to a ros point cloud, in cartisian meters
         '''
 
@@ -190,7 +201,7 @@ class FeatureExtraction(BruceNode):
 
         #give the feature message the same time stamp as the source sonar image
         #this is CRITICAL to good time sync downstream
-        feature_msg.header.stamp = ping.header.stamp
+        feature_msg.header.stamp = stamp
         feature_msg.header.frame_id = "base_link"
 
         #publish the point cloud, to be used by SLAM
@@ -203,16 +214,20 @@ class FeatureExtraction(BruceNode):
         grayscale image + geometry) via the configured sonar adapter.
         '''
 
-        #normalize the driver message to a SonarPing
-        ping = self.sonar_adapter(sonar_msg)
-
-        if ping.ping_id % self.skip != 0:
+        # cheap skip test BEFORE the adapter runs, so skipped frames never pay
+        # the image decode. Drivers without a ping id use a message counter.
+        self.frame_count += 1
+        ping_id = getattr(sonar_msg, "ping_id", self.frame_count)
+        if ping_id % self.skip != 0:
             self.feature_img = None
             # Don't extract features in every frame.
             # But we still need empty point cloud for synchronization in SLAM node.
             nan = np.array([[np.nan, np.nan]])
-            self.publish_features(ping, nan)
+            self.publish_features(sonar_msg.header.stamp, nan)
             return
+
+        #normalize the driver message to a SonarPing
+        ping = self.sonar_adapter(sonar_msg)
 
         #the adapter already decoded the polar image to grayscale
         img = ping.image
@@ -250,4 +265,4 @@ class FeatureExtraction(BruceNode):
             )
 
         #publish the feature message
-        self.publish_features(ping, points)
+        self.publish_features(ping.header.stamp, points)

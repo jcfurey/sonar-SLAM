@@ -40,15 +40,16 @@ class KalmanNode(BruceNode):
 		self.imu_yaw0 = None
 
 
-	def init_node(self, node_name="kalman")->None:
+	def init_node(self, node_name="kalman", **node_kwargs)->None:
 		"""Init the node, fetch all paramaters.
 
 		Args:
 			node_name (str, optional): The ROS 2 node name. Defaults to "kalman".
+			**node_kwargs: extra rclpy Node kwargs (e.g. parameter_overrides).
 		"""
 
 		# initialise the underlying rclpy node
-		BruceNode.__init__(self, node_name)
+		BruceNode.__init__(self, node_name, **node_kwargs)
 
 		# ROS 2 parameters cannot hold 2-D arrays, so the matrices below are stored
 		# flattened (row-major) in the YAML and reshaped to their true dimensions here.

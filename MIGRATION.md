@@ -85,10 +85,12 @@ ROS 2 parameter files use the `/**: ros__parameters:` form. Notable transforms:
 2. **Driver message ABI** — vendored stubs are reconstructed; match the upstream Argonaut
    drivers for real data.
 3. **Offline mode** is a best-effort port: it hosts all nodes in one process with a
-   background executor and expects a `rosbag2` bag (convert legacy `.bag` first). Because
-   the config files use the `/**` wildcard, a couple of parameters that differ between the
-   SLAM and localization nodes (e.g. `keyframe_translation`) will take a single merged
-   value in the single-process offline run. The online launch (separate processes) is
-   unaffected.
+   background (single-threaded) executor and expects a `rosbag2` bag (convert legacy
+   `.bag` first). Each in-process sub-node loads its own config file with
+   `use_global_arguments` disabled, so per-node parameters (e.g. `keyframe_translation`)
+   stay isolated exactly as in the online launch. Bag messages are routed on the
+   nodes' actual configured sensor topics (with the historic defaults kept as
+   fallbacks), `/clock` is driven by every bag message, and RViz runs with
+   `use_sim_time` in offline mode.
 4. **`sensor_msgs_py.point_cloud2.read_points`** return type has varied across ROS 2
    releases; `pointcloud2_to_xyz_array` handles both structured-array and iterable forms.

@@ -18,9 +18,7 @@ from bruce_slam.utils.conversions import *
 from bruce_slam.utils.visualization import *
 from bruce_slam.slam import SLAM, Keyframe
 from bruce_slam import pcl
-
-# Argonaut imports
-from sonar_oculus.msg import OculusPing
+from bruce_slam.sensors import SONAR_ADAPTERS, make_adapter
 
 
 class SLAMNode(SLAM, BruceNode):
@@ -34,15 +32,20 @@ class SLAMNode(SLAM, BruceNode):
         # the threading lock
         self.lock = threading.RLock()
 
-    def init_node(self, node_name="slam")->None:
+        # sonar-configuration subscription state (see sonar_callback)
+        self.sonar_sub = None
+        self.oculus_configured = False
+
+    def init_node(self, node_name="slam", **node_kwargs)->None:
         """Configures the SLAM node
 
         Args:
             node_name (str, optional): The ROS 2 node name. Defaults to "slam".
+            **node_kwargs: extra rclpy Node kwargs (e.g. parameter_overrides).
         """
 
         # initialise the underlying rclpy node
-        BruceNode.__init__(self, node_name)
+        BruceNode.__init__(self, node_name, **node_kwargs)
 
         #keyframe paramters, how often to add them
         self.keyframe_duration = self.get_param("keyframe_duration")
@@ -86,6 +89,16 @@ class SLAMNode(SLAM, BruceNode):
 
         #mak delay between an incoming point cloud and dead reckoning
         self.feature_odom_sync_max_delay = 0.5
+
+        # subscribe to the raw sonar once so the Oculus geometry (max range /
+        # aperture, used to bound NSSM loop-closure search) reflects the real
+        # sensor instead of the OculusProperty defaults. The subscription is
+        # destroyed after the first ping (config is assumed static).
+        sonar_driver = self.get_param("sonar/driver", "oculus_compressed")
+        self.sonar_topic = self.get_param("sonar/topic", SONAR_TOPIC)
+        self.sonar_adapter, sonar_type = make_adapter(SONAR_ADAPTERS, sonar_driver, self)
+        self.sonar_sub = self.create_subscription(
+            sonar_type, self.sonar_topic, self.sonar_callback, 10)
 
         #define the subsrcibing topics
         self.feature_sub = Subscriber(self, PointCloud2, SONAR_FEATURE_TOPIC)
@@ -141,16 +154,22 @@ class SLAMNode(SLAM, BruceNode):
         loginfo("SLAM node is initialized")
 
     @add_lock
-    def sonar_callback(self, ping:OculusPing)->None:
-        """Subscribe once to configure Oculus property.
-        Assume sonar configuration doesn't change much.
+    def sonar_callback(self, sonar_msg)->None:
+        """Configure the Oculus property from the first sonar ping, then stop
+        listening. Assume sonar configuration doesn't change much. Idempotent so
+        the offline bag pump can call it directly for every sonar message.
 
         Args:
-            ping (OculusPing): The sonar message.
+            sonar_msg: the raw sonar driver message (normalized via the adapter).
         """
 
-        self.oculus.configure(ping)
-        self.destroy_subscription(self.sonar_sub)
+        if self.oculus_configured:
+            return
+        self.oculus.configure(self.sonar_adapter(sonar_msg))
+        self.oculus_configured = True
+        if self.sonar_sub is not None:
+            self.destroy_subscription(self.sonar_sub)
+            self.sonar_sub = None
 
     @add_lock
     def SLAM_callback(self, feature_msg:PointCloud2, odom_msg:Odometry)->None:

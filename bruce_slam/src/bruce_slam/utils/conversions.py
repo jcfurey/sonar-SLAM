@@ -10,7 +10,13 @@ from sensor_msgs.msg import Image, PointCloud2, PointField
 from geometry_msgs.msg import Pose, PoseStamped, Quaternion, TransformStamped
 from sensor_msgs_py import point_cloud2 as pc2
 
-from sonar_oculus.msg import OculusPing, OculusPingUncompressed
+# The Oculus driver messages are optional: deployments using only generic sonar
+# drivers (see bruce_slam.sensors) need not have the sonar_oculus package built.
+try:
+    from sonar_oculus.msg import OculusPing, OculusPingUncompressed
+    _OCULUS_PING_TYPES = (OculusPing, OculusPingUncompressed)
+except ImportError:  # pragma: no cover - depends on installed driver packages
+    _OCULUS_PING_TYPES = ()
 
 from .topics import *
 
@@ -262,6 +268,23 @@ def g2r(gtsam_obj:gtsam.Pose3) -> Pose:
 bridge = cv_bridge.CvBridge()
 
 
+def apply_gamma(img: np.ndarray, gamma_byte: float) -> np.ndarray:
+    """Undo the Oculus gamma correction on a sonar image.
+
+    Args:
+        img (np.ndarray): the raw image (0-255)
+        gamma_byte (float): the raw gamma byte from the fire message; per the
+            Oculus spec 0 (and 0xff) mean "gamma correction = 1.0", so 0 is
+            treated as 255 rather than dividing by zero.
+
+    Returns:
+        np.ndarray: the gamma-corrected image (float, 0-255)
+    """
+
+    gamma = gamma_byte if gamma_byte else 255.0
+    return np.clip(cv2.pow(img / 255.0, 255.0 / gamma) * 255.0, 0, 255)
+
+
 def r2n(ros_msg) -> np.array:
     """Convert a ros message of type OculusPing (or Image/PointCloud2) to a numpy array
 
@@ -275,12 +298,10 @@ def r2n(ros_msg) -> np.array:
         np.array: the image data in numpy array form
     """
 
-    if isinstance(ros_msg, (OculusPing, OculusPingUncompressed)):
+    if _OCULUS_PING_TYPES and isinstance(ros_msg, _OCULUS_PING_TYPES):
 
         img = r2n(ros_msg.ping)
-        img = np.clip(
-            cv2.pow(img / 255.0, 255.0 / ros_msg.fire_msg.gamma) * 255.0, 0, 255
-        )
+        img = apply_gamma(img, ros_msg.fire_msg.gamma)
         return np.float32(img)
     elif isinstance(ros_msg, Image):
         img = bridge.imgmsg_to_cv2(ros_msg, desired_encoding="passthrough")
@@ -290,7 +311,11 @@ def r2n(ros_msg) -> np.array:
         cols = sum(f.count for f in ros_msg.fields)
         field_names = [f.name for f in ros_msg.fields]
         points = pc2.read_points(ros_msg, field_names=field_names, skip_nans=False)
-        arr = np.array([[p[name] for name in field_names] for p in points])
+        if isinstance(points, np.ndarray) and points.dtype.names is not None:
+            # vectorized: loop over the handful of fields, not every point
+            arr = np.column_stack([points[name] for name in field_names])
+        else:
+            arr = np.array([[p[name] for name in field_names] for p in points])
         return arr.reshape(rows, cols)
     else:
         raise NotImplementedError(

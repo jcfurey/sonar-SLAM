@@ -107,25 +107,32 @@ def generate_launch_description():
     )
 
     # -------------------------------------------------------------- offline
+    # Only slam.yaml is passed here: the offline process constructs the
+    # localization/feature/gyro sub-nodes itself, each loading its own config
+    # file with use_global_arguments disabled (per-node parameter isolation —
+    # passing all YAMLs here would merge their /**-rooted keys onto every node).
     slam_offline = Node(
         condition=offline,
         package="bruce_slam", executable="slam_node.py",
         name="slam", namespace=ns, output="screen",
         arguments=["--file", file, "--start", start, "--duration", duration],
         parameters=[
-            cfg("dead_reckoning.yaml"),
-            cfg("feature.yaml"),
-            cfg("gyro.yaml"),
             cfg("slam.yaml"),
             {"enable_slam": enable_slam, "icp_config": icp_config},
         ],
     )
 
     # ----------------------------------------------------------------- rviz
+    # In offline mode the bag pump publishes /clock, so rviz runs on sim time
+    # (otherwise tf lookups against wall-clock 'now' would find nothing).
+    use_sim_time = ParameterValue(
+        PythonExpression(["'", file, "' != ''"]), value_type=bool
+    )
     rviz_node = Node(
         condition=IfCondition(rviz),
         package="rviz2", executable="rviz2", name="rviz",
         arguments=["-d", PathJoinSubstitution([pkg, "rviz", "video.rviz"])],
+        parameters=[{"use_sim_time": use_sim_time}],
     )
 
     return LaunchDescription(args + [online_group, slam_offline, rviz_node])

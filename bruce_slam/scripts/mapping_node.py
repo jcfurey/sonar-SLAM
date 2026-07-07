@@ -22,9 +22,9 @@ class MappingNode(Mapping, BruceNode):
         self.lock = threading.RLock()
         self.use_slam_traj = True
 
-    def init_node(self, node_name="mapping"):
+    def init_node(self, node_name="mapping", **node_kwargs):
         # initialise the underlying rclpy node
-        BruceNode.__init__(self, node_name)
+        BruceNode.__init__(self, node_name, **node_kwargs)
 
         self.use_slam_traj = self.get_param("use_slam_traj", True)
 

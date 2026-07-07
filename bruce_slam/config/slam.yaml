@@ -21,6 +21,13 @@
     # the node falls back to the installed package share copy of icp.yaml.
     icp_config: ""
 
+    # Raw sonar used ONCE at startup to configure the sonar geometry (max range /
+    # aperture bound the loop-closure search). Keep consistent with feature.yaml
+    # (which defaults to uncompressed images).
+    sonar:
+      driver: oculus_uncompressed   # oculus_compressed | oculus_uncompressed | image
+      topic: /sonar_oculus_node/ping
+
     # Downsample points for ICP/publishing
     point_resolution: 0.5
 

@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
-import sys
 import rclpy
-from rclpy.utilities import remove_ros_args
 
 # pull in the kalman filter code
 from bruce_slam.utils.io import *
@@ -14,14 +12,8 @@ def main(args=None):
     node = KalmanNode()
     node.init_node("kalman")
 
-    parser = common_parser()
-    parsed, _ = parser.parse_known_args(remove_ros_args(args=sys.argv)[1:])
-
     try:
-        if not parsed.file:
-            loginfo("Start online Kalman...")
-        else:
-            loginfo("Offline mode is driven by slam_node; running online here...")
+        loginfo("Start online Kalman...")
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass

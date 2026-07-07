@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 
+import os
 import sys
 import threading
 
+import yaml as pyyaml
+
 import rclpy
-from rclpy.executors import MultiThreadedExecutor
+from rclpy.executors import SingleThreadedExecutor
+from rclpy.parameter import Parameter
 from rclpy.utilities import remove_ros_args
+from ament_index_python.packages import get_package_share_directory
 
 from bruce_slam.utils.io import *
 from bruce_slam.slam_ros import SLAMNode
@@ -13,13 +18,53 @@ from bruce_slam.utils.topics import *
 from bruce_slam.utils.conversions import make_transform
 
 
+def load_config_overrides(config_name):
+    """Load a bruce_slam config YAML as rclpy parameter overrides.
+
+    Reads the ``/**: ros__parameters:`` document, flattens nested keys to the
+    dotted ROS 2 form, and returns a list of rclpy Parameters. Used by the
+    offline mode to give each in-process node exactly its own config file —
+    restoring the per-node parameter isolation the online launch has (the
+    ``/**`` wildcard would otherwise apply every file to every node, with
+    colliding keys silently taking the last file's value).
+
+    Args:
+        config_name (str): file name inside the installed config directory
+
+    Returns:
+        list[Parameter]: overrides for the node constructor
+    """
+
+    path = os.path.join(
+        get_package_share_directory("bruce_slam"), "config", config_name
+    )
+    with open(path) as f:
+        data = pyyaml.safe_load(f)
+    params = data.get("/**", {}).get("ros__parameters", {})
+
+    flat = {}
+
+    def _flatten(prefix, d):
+        for k, v in d.items():
+            key = "{}.{}".format(prefix, k) if prefix else k
+            if isinstance(v, dict):
+                _flatten(key, v)
+            else:
+                flat[key] = v
+
+    _flatten("", params)
+    return [Parameter(k, value=v) for k, v in flat.items()]
+
+
 def offline(node, args) -> None:
     """Run the SLAM system offline from a rosbag2 bag.
 
-    All nodes are hosted in a single process; a background executor delivers the
-    inter-node messages (features, odometry) while the bag is replayed from the
-    main thread. This is a best-effort port of the ROS 1 offline mode and expects
-    a rosbag2 directory rather than a legacy ``.bag`` file.
+    All nodes are hosted in a single process. Each sub-node is constructed with
+    its own config file as parameter overrides and with use_global_arguments
+    disabled, so the process-level params (slam.yaml) cannot bleed into it.
+    Inter-node topics are delivered by a single-threaded executor pumped from
+    a background thread; bag messages are injected from the main thread on the
+    nodes' actual configured topics.
 
     Args:
         node (SLAMNode): the already-initialised SLAM node
@@ -28,6 +73,7 @@ def offline(node, args) -> None:
 
     # pull in the extra imports required
     from rosgraph_msgs.msg import Clock
+    from tf2_ros import StaticTransformBroadcaster
     from bruce_slam.dead_reckoning import DeadReckoningNode
     from bruce_slam.feature_extraction import FeatureExtraction
     from bruce_slam.gyro import GyroFilter
@@ -38,21 +84,52 @@ def offline(node, args) -> None:
     node.save_fig = False
     node.save_data = False
 
-    # instantiate the nodes required
+    # instantiate the sub-nodes, each isolated to its own config file
     dead_reckoning_node = DeadReckoningNode()
-    dead_reckoning_node.init_node("localization")
+    dead_reckoning_node.init_node(
+        "localization",
+        parameter_overrides=load_config_overrides("dead_reckoning.yaml"),
+        use_global_arguments=False,
+    )
     feature_extraction_node = FeatureExtraction()
-    feature_extraction_node.init_node("feature_extraction")
+    feature_extraction_node.init_node(
+        "feature_extraction",
+        parameter_overrides=load_config_overrides("feature.yaml"),
+        use_global_arguments=False,
+    )
     gyro_node = GyroFilter()
-    gyro_node.init_node("gyro")
+    gyro_node.init_node(
+        "gyro",
+        parameter_overrides=load_config_overrides("gyro.yaml"),
+        use_global_arguments=False,
+    )
     clock_pub = node.create_publisher(Clock, "/clock", 100)
 
-    # spin every node in the background so inter-node topics are delivered
-    executor = MultiThreadedExecutor()
+    # world -> map is a fixed transform; broadcast it once (latched)
+    static_tf = StaticTransformBroadcaster(node)
+    static_tf.sendTransform(
+        make_transform((0, 0, 0), (1, 0, 0, 0), Clock().clock, "world", "map")
+    )
+
+    # spin every node in the background so inter-node topics are delivered.
+    # A single-threaded executor keeps callback concurrency close to the ROS 1
+    # behaviour (one executor callback at a time).
+    executor = SingleThreadedExecutor()
     for n in (node, dead_reckoning_node, feature_extraction_node, gyro_node):
         executor.add_node(n)
     spin_thread = threading.Thread(target=executor.spin, daemon=True)
     spin_thread.start()
+
+    # route on the topics the nodes are ACTUALLY configured with (the
+    # dvl/depth/gyro/sonar topic params), falling back to the historic
+    # defaults so old bags keep working.
+    imu_topics = {IMU_TOPIC, IMU_TOPIC_MK_II}
+    if dead_reckoning_node.imu_topic:
+        imu_topics.add(dead_reckoning_node.imu_topic)
+    dvl_topics = {DVL_TOPIC, dead_reckoning_node.dvl_topic}
+    depth_topics = {DEPTH_TOPIC, dead_reckoning_node.depth_topic}
+    sonar_topics = {SONAR_TOPIC, SONAR_TOPIC_UNCOMPRESSED, feature_extraction_node.sonar_topic}
+    gyro_topics = {GYRO_TOPIC, gyro_node.gyro_topic}
 
     # loop over the entire rosbag
     for topic, msg in read_bag(args.file, args.start, args.duration, progress=True):
@@ -63,27 +140,26 @@ def offline(node, args) -> None:
         if not rclpy.ok():
             break
 
-        if topic == IMU_TOPIC or topic == IMU_TOPIC_MK_II:
+        if topic in imu_topics:
             # imu_sub only exists when the localization node uses the IMU
             if hasattr(dead_reckoning_node, "imu_sub"):
                 dead_reckoning_node.imu_sub.signalMessage(msg)
-        elif topic == DVL_TOPIC:
+        elif topic in dvl_topics:
             dead_reckoning_node.dvl_sub.signalMessage(msg)
-        elif topic == DEPTH_TOPIC:
+        elif topic in depth_topics:
             dead_reckoning_node.depth_sub.signalMessage(msg)
-        elif topic in (SONAR_TOPIC, SONAR_TOPIC_UNCOMPRESSED):
+        elif topic in sonar_topics:
+            # configure the SLAM node's sonar geometry (idempotent) and
+            # extract features
+            node.sonar_callback(msg)
             feature_extraction_node.callback(msg)
-        elif topic == GYRO_TOPIC:
+        elif topic in gyro_topics:
             gyro_node.callback(msg)
 
-        # use the IMU to drive the clock
-        if topic == IMU_TOPIC or topic == IMU_TOPIC_MK_II:
+        # drive /clock from every message so sim time advances even for bags
+        # with no IMU (e.g. the DVL+depth only mode)
+        if hasattr(msg, "header"):
             clock_pub.publish(Clock(clock=msg.header.stamp))
-
-            # Publish map to world so we can visualize all in a z-down frame in rviz.
-            node.tf.sendTransform(
-                make_transform((0, 0, 0), (1, 0, 0, 0), msg.header.stamp, "world", "map")
-            )
 
     executor.shutdown()
     for n in (dead_reckoning_node, feature_extraction_node, gyro_node):
