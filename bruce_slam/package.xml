@@ -35,7 +35,6 @@
   <depend>bar30_depth</depend>
   <depend>kvh_gyro</depend>
 
-  <exec_depend>rclpy</exec_depend>
   <exec_depend>sensor_msgs_py</exec_depend>
   <exec_depend>rosidl_runtime_py</exec_depend>
   <exec_depend>ros2launch</exec_depend>

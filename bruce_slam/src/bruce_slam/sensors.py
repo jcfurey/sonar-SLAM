@@ -197,7 +197,7 @@ DEPTH_ADAPTERS = {
 # Gyro adapters (raw integrated delta angles)
 # ---------------------------------------------------------------------------
 class KvhGyroAdapter(SensorAdapter):
-    msg_type = "kvh_gyro/msg/gyro"
+    msg_type = "kvh_gyro/msg/Gyro"
 
     def __call__(self, msg):
         return GyroReading(msg.header, list(msg.delta))
