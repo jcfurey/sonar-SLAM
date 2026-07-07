@@ -70,14 +70,8 @@ class DeadReckoningNode(BruceNode):
 
 		# Subscribers and caches
 		self.dvl_sub = Subscriber(self, DVL, DVL_TOPIC)
-		self.gyro_sub = Subscriber(self, Odometry, GYRO_INTEGRATION_TOPIC)
 		self.depth_sub = Subscriber(self, Depth, DEPTH_TOPIC)
 		self.depth_cache = Cache(self.depth_sub, 1)
-
-		if self.get_param("imu_version") == 1:
-			self.imu_sub = Subscriber(self, Imu, IMU_TOPIC)
-		elif self.get_param("imu_version") == 2:
-			self.imu_sub = Subscriber(self, Imu, IMU_TOPIC_MK_II)
 
 		# Use point cloud for visualization
 		self.traj_pub = self.create_publisher(
@@ -86,16 +80,31 @@ class DeadReckoningNode(BruceNode):
 		self.odom_pub = self.create_publisher(
 			Odometry, LOCALIZATION_ODOM_TOPIC, 10)
 
-		# are we using the FOG gyroscope?
-		self.use_gyro = self.get_param("use_gyro")
+		# which orientation sources are available?
+		self.use_gyro = self.get_param("use_gyro")        # FOG gyroscope
+		self.use_imu = self.get_param("use_imu", True)    # VN100 MEMS IMU
 
-		# define the callback, are we using the gyro or the VN100?
-		if self.use_gyro:
+		# only subscribe to the IMU if we intend to use it
+		if self.use_imu:
+			if self.get_param("imu_version") == 1:
+				self.imu_sub = Subscriber(self, Imu, IMU_TOPIC)
+			else:
+				self.imu_sub = Subscriber(self, Imu, IMU_TOPIC_MK_II)
+
+		# define the callback based on the available orientation sources
+		if self.use_imu and self.use_gyro:
+			# VN100 (roll/pitch) + FOG (yaw) + DVL
+			self.gyro_sub = Subscriber(self, Odometry, GYRO_INTEGRATION_TOPIC)
 			self.ts = ApproximateTimeSynchronizer([self.imu_sub, self.dvl_sub, self.gyro_sub], 300, .1)
 			self.ts.registerCallback(self.callback_with_gyro)
-		else:
+		elif self.use_imu:
+			# VN100 (roll/pitch/yaw) + DVL
 			self.ts = ApproximateTimeSynchronizer([self.imu_sub, self.dvl_sub], 200, .1)
 			self.ts.registerCallback(self.callback)
+		else:
+			# No IMU and no FOG: dead reckon from the DVL and depth only
+			self.dvl_sub.registerCallback(self.callback_dvl_only)
+			logwarn("Localization running in DVL+depth only mode (no IMU/FOG); heading held at zero.")
 
 		self.tf = TransformBroadcaster(self)
 
@@ -180,6 +189,32 @@ class DeadReckoningNode(BruceNode):
 
 		# package the odom message and publish it
 		self.send_odometry(vel,rot,dvl_msg.header.stamp,depth_msg.depth)
+
+
+	def callback_dvl_only(self, dvl_msg:DVL)->None:
+		"""Dead reckon from the DVL and depth only, with no IMU or FOG.
+
+		When neither the VN100 IMU nor the KVH FOG is available there is no
+		orientation source, so the heading is held at zero and the DVL body-frame
+		velocities are integrated directly. This is a reduced-accuracy fallback for
+		platforms without an inertial/heading sensor.
+
+		Args:
+			dvl_msg (DVL): the message from the DVL
+		"""
+		# get the most recent depth measurement
+		depth_msg = self.depth_cache.getLast()
+		if depth_msg is None:
+			return
+
+		# no orientation source -> assume level, heading held at zero (identity rotation)
+		rot = gtsam.Rot3()
+
+		# parse the DVL message into an array of velocities
+		vel = np.array([dvl_msg.velocity.x, dvl_msg.velocity.y, dvl_msg.velocity.z])
+
+		# package the odom message and publish it
+		self.send_odometry(vel, rot, dvl_msg.header.stamp, depth_msg.depth)
 
 
 	def send_odometry(self,vel:np.array,rot:gtsam.Rot3,dvl_time,depth:float)->None:

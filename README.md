@@ -105,6 +105,16 @@ This runs our offline mode, great for quick testing/tuning of parameters.
 
 This SLAM system has many parameters, please read the wiki for an explanation of each parameter. However, we highly recommend using the default parameters in the config folder. If you are to tune anything it would be the feature extraction node in `feature.yaml`. The config files are ROS 2 parameter files (`/**: ros__parameters:`); angles that used the ROS 1 `deg()` helper are pre-converted to radians, and the Kalman matrices are stored flattened (see `config/kalman.yaml`).
 
+## Dead-reckoning / localization modes
+
+The localization node (`dead_reckoning.yaml`) supports three orientation-source modes:
+
+| `use_imu` | `use_gyro` | Mode |
+| --- | --- | --- |
+| `true` | `false` | VN100 IMU (roll/pitch/yaw) + DVL — **default** |
+| `true` | `true` | VN100 IMU (roll/pitch) + KVH FOG (yaw) + DVL |
+| `false` | `false` | **DVL + depth only** — no orientation sensor, heading held at zero (reduced accuracy fallback for platforms without an IMU/FOG) |
+
 # Current To Do list
 - enhance some of the cpp documentation for CFAR
 

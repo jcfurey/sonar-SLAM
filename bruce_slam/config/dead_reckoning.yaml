@@ -14,6 +14,10 @@
     # should we use the FOG? Do not set to true if there is no FOG sensor.
     use_gyro: false
 
+    # should we use the VN100 IMU? Set false together with use_gyro:false to run a
+    # DVL + depth only mode (no orientation sensor, heading held at zero).
+    use_imu: true
+
     # which IMU driver are we using 1 is the heavy and 2 is heavy MKII
     # sample_data file is version 1
     imu_version: 1

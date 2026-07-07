@@ -64,7 +64,9 @@ def offline(node, args) -> None:
             break
 
         if topic == IMU_TOPIC or topic == IMU_TOPIC_MK_II:
-            dead_reckoning_node.imu_sub.signalMessage(msg)
+            # imu_sub only exists when the localization node uses the IMU
+            if hasattr(dead_reckoning_node, "imu_sub"):
+                dead_reckoning_node.imu_sub.signalMessage(msg)
         elif topic == DVL_TOPIC:
             dead_reckoning_node.dvl_sub.signalMessage(msg)
         elif topic == DEPTH_TOPIC:
