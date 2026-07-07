@@ -113,7 +113,7 @@ The localization node (`dead_reckoning.yaml`) supports three orientation-source 
 | --- | --- | --- |
 | `true` | `false` | VN100 IMU (roll/pitch/yaw) + DVL — **default** |
 | `true` | `true` | VN100 IMU (roll/pitch) + KVH FOG (yaw) + DVL |
-| `false` | `false` | **DVL + depth only** — no orientation sensor, heading held at zero (reduced accuracy fallback for platforms without an IMU/FOG) |
+| `false` | `false` | **DVL + depth only** — no inertial sensor; heading is taken from the SLAM scan matcher (fed back on `slam/odom`) and the DVL velocities are rotated by it. Bootstraps at zero until the first SLAM estimate. Reduced-accuracy fallback for platforms without an IMU/FOG. |
 
 # Current To Do list
 - enhance some of the cpp documentation for CFAR

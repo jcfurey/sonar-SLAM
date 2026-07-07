@@ -45,6 +45,10 @@ class DeadReckoningNode(BruceNode):
 		self.keyframe_rotation = None
 		self.dvl_error_timer = 0.0
 
+		# latest heading estimate fed back from the SLAM scan matcher, used by the
+		# DVL+depth only mode (no IMU/FOG) to orient the DVL velocities
+		self.slam_yaw = 0.0
+
 		# place holder for multi-robot SLAM
 		self.rov_id = ""
 
@@ -102,9 +106,14 @@ class DeadReckoningNode(BruceNode):
 			self.ts = ApproximateTimeSynchronizer([self.imu_sub, self.dvl_sub], 200, .1)
 			self.ts.registerCallback(self.callback)
 		else:
-			# No IMU and no FOG: dead reckon from the DVL and depth only
+			# No IMU and no FOG: dead reckon from the DVL and depth only, taking the
+			# heading from the SLAM scan matcher (fed back on SLAM_ODOM_TOPIC).
 			self.dvl_sub.registerCallback(self.callback_dvl_only)
-			logwarn("Localization running in DVL+depth only mode (no IMU/FOG); heading held at zero.")
+			self.slam_sub = self.create_subscription(
+				Odometry, SLAM_ODOM_TOPIC, self.slam_heading_callback, 10)
+			logwarn(
+				"Localization running in DVL+depth only mode (no IMU/FOG); "
+				"heading is taken from the SLAM scan matcher.")
 
 		self.tf = TransformBroadcaster(self)
 
@@ -191,13 +200,27 @@ class DeadReckoningNode(BruceNode):
 		self.send_odometry(vel,rot,dvl_msg.header.stamp,depth_msg.depth)
 
 
+	def slam_heading_callback(self, odom_msg:Odometry)->None:
+		"""Cache the latest heading estimated by the SLAM scan matcher.
+
+		Used by the DVL+depth only mode to orient the DVL velocities without an
+		IMU/FOG. Runs at keyframe rate; the value is held between updates.
+
+		Args:
+			odom_msg (Odometry): the SLAM pose estimate (SLAM_ODOM_TOPIC)
+		"""
+		self.slam_yaw = r2g(odom_msg.pose.pose).rotation().yaw()
+
+
 	def callback_dvl_only(self, dvl_msg:DVL)->None:
 		"""Dead reckon from the DVL and depth only, with no IMU or FOG.
 
-		When neither the VN100 IMU nor the KVH FOG is available there is no
-		orientation source, so the heading is held at zero and the DVL body-frame
-		velocities are integrated directly. This is a reduced-accuracy fallback for
-		platforms without an inertial/heading sensor.
+		When neither the VN100 IMU nor the KVH FOG is available there is no inertial
+		orientation source. Instead the heading is taken from the SLAM scan matcher
+		(fed back on SLAM_ODOM_TOPIC) and the DVL body-frame velocities are rotated
+		into the world frame with it. Roll and pitch are assumed level, consistent
+		with the fixed-depth 3-DOF motion model. Before the first SLAM estimate
+		arrives the heading bootstraps at zero.
 
 		Args:
 			dvl_msg (DVL): the message from the DVL
@@ -207,8 +230,8 @@ class DeadReckoningNode(BruceNode):
 		if depth_msg is None:
 			return
 
-		# no orientation source -> assume level, heading held at zero (identity rotation)
-		rot = gtsam.Rot3()
+		# heading from the SLAM scan matcher (0 until the first SLAM estimate), level attitude
+		rot = gtsam.Rot3.Yaw(self.slam_yaw)
 
 		# parse the DVL message into an array of velocities
 		vel = np.array([dvl_msg.velocity.x, dvl_msg.velocity.y, dvl_msg.velocity.z])
