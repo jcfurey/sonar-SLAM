@@ -11,15 +11,11 @@ from nav_msgs.msg import Odometry
 from std_msgs.msg import Header
 from sensor_msgs.msg import Imu
 
-# import custom messages
-from rti_dvl.msg import DVL
-from bar30_depth.msg import Depth
-from kvh_gyro.msg import gyro
-
 # bruce imports
 from bruce_slam.utils.topics import *
 from bruce_slam.utils.conversions import *
 from bruce_slam.utils.io import *
+from bruce_slam.sensors import DVL_ADAPTERS, DEPTH_ADAPTERS, GYRO_ADAPTERS, make_adapter
 
 
 def euler_from_quaternion(quat):
@@ -80,15 +76,23 @@ class KalmanNode(BruceNode):
 		self.use_gyro = self.get_param("use_gyro")
 		self.imu_offset = np.radians(self.get_param("imu_offset"))
 
-		# check which version of the imu we are using
-		if self.get_param("imu_version") == 1:
-			self.imu_sub = self.create_subscription(Imu, IMU_TOPIC, self.imu_callback, 250)
-		elif self.get_param("imu_version") == 2:
-			self.imu_sub = self.create_subscription(Imu, IMU_TOPIC_MK_II, self.imu_callback, 250)
+		# sensor drivers (pluggable adapters + configurable topics)
+		self.dvl_adapter, dvl_type = make_adapter(
+			DVL_ADAPTERS, self.get_param("dvl/driver", "rti_dvl"), self)
+		self.depth_adapter, depth_type = make_adapter(
+			DEPTH_ADAPTERS, self.get_param("depth/driver", "bar30"), self)
+
+		# IMU (standard sensor_msgs/Imu), topic configurable
+		imu_topic = self.get_param("imu/topic", "")
+		if not imu_topic:
+			imu_topic = IMU_TOPIC if self.get_param("imu_version") == 1 else IMU_TOPIC_MK_II
+		self.imu_sub = self.create_subscription(Imu, imu_topic, self.imu_callback, 250)
 
 		# define the other subcribers
-		self.dvl_sub = self.create_subscription(DVL, DVL_TOPIC, self.dvl_callback, 250)
-		self.depth_sub = self.create_subscription(Depth, DEPTH_TOPIC, self.pressure_callback, 250)
+		self.dvl_sub = self.create_subscription(
+			dvl_type, self.get_param("dvl/topic", DVL_TOPIC), self.dvl_callback, 250)
+		self.depth_sub = self.create_subscription(
+			depth_type, self.get_param("depth/topic", DEPTH_TOPIC), self.pressure_callback, 250)
 		self.odom_pub_kalman = self.create_publisher(Odometry, LOCALIZATION_ODOM_TOPIC, 250)
 
 		# define the transfor broadcaster
@@ -96,7 +100,10 @@ class KalmanNode(BruceNode):
 
 		# if we are using the gyroscope set up the subscribers
 		if self.use_gyro:
-			self.gyro_sub = self.create_subscription(gyro, GYRO_TOPIC, self.gyro_callback, 250)
+			self.gyro_adapter, gyro_type = make_adapter(
+				GYRO_ADAPTERS, self.get_param("gyro/driver", "kvh_gyro"), self)
+			self.gyro_sub = self.create_subscription(
+				gyro_type, self.get_param("gyro/topic", GYRO_TOPIC), self.gyro_callback, 250)
 
 		# define the initial pose, all zeros
 		R_init = gtsam.Rot3.Ypr(0.,0.,0.)
@@ -149,28 +156,28 @@ class KalmanNode(BruceNode):
 		return corrected_x, corrected_P
 
 
-	def gyro_callback(self,gyro_msg:gyro)->None:
+	def gyro_callback(self,gyro_msg)->None:
 		"""Handle the Kalman Filter using the FOG only.
 		Args:
-			gyro_msg (gyro): the euler angles from the gyro
+			gyro_msg: the raw gyro driver message (normalized via the gyro adapter)
 		"""
 
 		# parse message and apply the offset matrix
-		arr = np.array(list(gyro_msg.delta))
+		arr = self.gyro_adapter(gyro_msg).delta
 		arr = arr.dot(self.offset_matrix)
 		delta_yaw_meas = np.array([[arr[0]],[0],[0]]) #Measurement of shape(3,1) to apply Kalman
 		self.state_vector,self.cov_matrix = self.kalman_correct(self.state_vector, self.cov_matrix, delta_yaw_meas, self.H_gyro, self.R_gyro)
 		self.yaw_gyro += self.state_vector[11][0]
 
-	def dvl_callback(self, dvl_msg:DVL)->None:
+	def dvl_callback(self, dvl_msg)->None:
 		"""Handle the Kalman Filter using the DVL only.
 
 		Args:
-			dvl_msg (DVL): the message from the DVL
+			dvl_msg: the raw DVL driver message (normalized via the DVL adapter)
 		"""
 
 		# parse the dvl velocites
-		dvl_measurement = np.array([[dvl_msg.velocity.x], [dvl_msg.velocity.y], [dvl_msg.velocity.z]])
+		dvl_measurement = self.dvl_adapter(dvl_msg).velocity.reshape(3, 1)
 
 		# We do not do a kalman correction if the speed is high.
 		if np.any(np.abs(dvl_measurement) > self.dvl_max_velocity):
@@ -179,13 +186,13 @@ class KalmanNode(BruceNode):
 			self.state_vector,self.cov_matrix  = self.kalman_correct(self.state_vector, self.cov_matrix, dvl_measurement, self.H_dvl, self.R_dvl)
 
 
-	def pressure_callback(self,depth_msg:Depth):
+	def pressure_callback(self,depth_msg):
 		"""Handle the Kalman Filter using the Depth.
 		Args:
-			depth_msg (Depth): pressure
+			depth_msg: the raw depth driver message (normalized via the depth adapter)
 		"""
 
-		depth = np.array([[depth_msg.depth],[0],[0]]) # We need the shape(3,1) for the correction
+		depth = np.array([[self.depth_adapter(depth_msg).depth],[0],[0]]) # shape(3,1) for the correction
 		self.state_vector,self.cov_matrix = self.kalman_correct(self.state_vector, self.cov_matrix, depth, self.H_depth, self.R_depth)
 
 	def imu_callback(self, imu_msg:Imu)->None:

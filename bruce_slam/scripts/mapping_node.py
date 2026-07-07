@@ -12,6 +12,7 @@ from bruce_slam.utils.topics import *
 from bruce_slam.utils.conversions import *
 from bruce_slam.utils.io import *
 from bruce_slam.mapping import Mapping
+from bruce_slam.sensors import SONAR_ADAPTERS, make_adapter
 
 
 class MappingNode(Mapping, BruceNode):
@@ -51,7 +52,10 @@ class MappingNode(Mapping, BruceNode):
         self.min_translation = self.get_param("min_translation")
         self.min_rotation = self.get_param("min_rotation")
 
-        self.sonar_sub = Subscriber(self, OculusPing, SONAR_TOPIC)
+        # sonar driver (pluggable adapter + configurable topic)
+        self.sonar_adapter, sonar_type = make_adapter(
+            SONAR_ADAPTERS, self.get_param("sonar/driver", "oculus_compressed"), self)
+        self.sonar_sub = Subscriber(self, sonar_type, self.get_param("sonar/topic", SONAR_TOPIC))
         if self.use_slam_traj:
             self.traj_sub = Subscriber(self, PointCloud2, SLAM_TRAJ_TOPIC)
         else:
@@ -91,7 +95,9 @@ class MappingNode(Mapping, BruceNode):
         return response
 
     @add_lock
-    def tpf_callback(self, traj_msg, ping, feature_msg):
+    def tpf_callback(self, traj_msg, ping_msg, feature_msg):
+        # normalize the raw sonar driver message to a SonarPing
+        ping = self.sonar_adapter(ping_msg)
         self.lock.acquire()
         with CodeTimer("Mapping - add keyframe"):
             traj = r2n(traj_msg)

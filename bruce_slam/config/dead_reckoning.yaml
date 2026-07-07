@@ -21,3 +21,20 @@
     # which IMU driver are we using 1 is the heavy and 2 is heavy MKII
     # sample_data file is version 1
     imu_version: 1
+
+    # ------------------------------------------------------------------------
+    # Sensor drivers (pluggable adapters, see bruce_slam/sensors.py).
+    # 'driver' selects the message type/parser; 'topic' overrides the default.
+    # ------------------------------------------------------------------------
+    dvl:
+      driver: rti_dvl          # rti_dvl | twist_stamped | twist_cov
+      topic: /rti/body_velocity/raw
+    depth:
+      driver: bar30            # bar30 | fluid_pressure
+      topic: /bar30/depth/raw
+      # for driver: fluid_pressure (sensor_msgs/FluidPressure -> depth):
+      # water_density: 1025.0
+      # gravity: 9.80665
+    imu:
+      # standard sensor_msgs/Imu; blank topic falls back to imu_version
+      topic: ""

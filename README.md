@@ -101,6 +101,30 @@ This runs our offline mode, great for quick testing/tuning of parameters.
 - `source install/setup.bash`
 - `ros2 launch bruce_slam slam.launch.py file:=/path/to/your_data`
 
+# Sensor drivers (pluggable)
+
+The SLAM/localization algorithms are decoupled from any specific hardware driver
+through a small **adapter registry** (`bruce_slam/src/bruce_slam/sensors.py`). Each
+sensor kind selects a driver by parameter; the adapter declares its ROS 2 message
+type (resolved at runtime, so unused driver packages need not be installed) and
+normalizes each message into an internal reading. All topics are parameters too.
+The IMU is not adapted — it already uses the standard `sensor_msgs/Imu`; only its
+topic is configurable.
+
+| Sensor | Param prefix | Built-in drivers |
+| --- | --- | --- |
+| DVL | `dvl.driver` / `dvl.topic` | `rti_dvl` (default), `twist_stamped` (`geometry_msgs/TwistStamped`), `twist_cov` (`geometry_msgs/TwistWithCovarianceStamped`) |
+| Depth | `depth.driver` / `depth.topic` | `bar30` (default), `fluid_pressure` (`sensor_msgs/FluidPressure`) |
+| Gyro (FOG) | `gyro.driver` / `gyro.topic` | `kvh_gyro` (default), `vector3_stamped` (`geometry_msgs/Vector3Stamped`) |
+| Sonar | `sonar.driver` / `sonar.topic` | `oculus_compressed`, `oculus_uncompressed` (Oculus, default), `image` (plain grayscale `sensor_msgs/Image` + `sonar.range_resolution` / `sonar.horizontal_fov`) |
+| IMU | `imu.topic` | standard `sensor_msgs/Imu` |
+
+Defaults reproduce the original hardware exactly. To use different hardware, set
+the `driver`/`topic` in the relevant config file (see the commented examples in
+`config/*.yaml`). **Adding a new sensor** is a matter of writing a small adapter
+class (message type + a parse function that returns the normalized reading) and
+registering it in the appropriate `*_ADAPTERS` dict in `sensors.py`.
+
 # Configuration
 
 This SLAM system has many parameters, please read the wiki for an explanation of each parameter. However, we highly recommend using the default parameters in the config folder. If you are to tune anything it would be the feature extraction node in `feature.yaml`. The config files are ROS 2 parameter files (`/**: ros__parameters:`); angles that used the ROS 1 `deg()` helper are pre-converted to radians, and the Kalman matrices are stored flattened (see `config/kalman.yaml`).

@@ -11,3 +11,8 @@
       x: 0.0
       y: 0.0
       z: 45.0
+
+    # gyro driver (pluggable adapter, see bruce_slam/sensors.py)
+    gyro:
+      driver: kvh_gyro         # kvh_gyro | vector3_stamped
+      topic: /gyro

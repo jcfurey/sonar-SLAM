@@ -24,3 +24,14 @@
 
     # are we using compressed imagary
     compressed_images: false
+
+    # ------------------------------------------------------------------------
+    # Sonar driver (pluggable adapter, see bruce_slam/sensors.py).
+    # Leave 'driver' blank to auto-select the Oculus adapter from compressed_images.
+    # ------------------------------------------------------------------------
+    sonar:
+      driver: ""     # "" | oculus_compressed | oculus_uncompressed | image
+      topic: ""      # "" -> default Oculus topic for the selected mode
+      # for driver: image (a plain grayscale polar sensor_msgs/Image):
+      # range_resolution: 0.03      # meters per range bin (required)
+      # horizontal_fov: 2.2689      # radians across all beams (default 130 deg)

@@ -9,16 +9,12 @@ from std_msgs.msg import Header
 from sensor_msgs.msg import PointCloud2, Imu
 from message_filters import ApproximateTimeSynchronizer, Cache, Subscriber
 
-# import custom messages
-from kvh_gyro.msg import gyro as GyroMsg
-from rti_dvl.msg import DVL
-from bar30_depth.msg import Depth
-
 # bruce imports
 from bruce_slam.utils.topics import *
 from bruce_slam.utils.conversions import *
 from bruce_slam.utils.io import *
 from bruce_slam.utils.visualization import ros_colorline_trajectory
+from bruce_slam.sensors import DVL_ADAPTERS, DEPTH_ADAPTERS, make_adapter
 
 
 class DeadReckoningNode(BruceNode):
@@ -72,9 +68,15 @@ class DeadReckoningNode(BruceNode):
 		self.keyframe_translation = self.get_param("keyframe_translation")
 		self.keyframe_rotation = self.get_param("keyframe_rotation")
 
+		# sensor drivers (pluggable adapters + configurable topics)
+		self.dvl_adapter, dvl_type = make_adapter(
+			DVL_ADAPTERS, self.get_param("dvl/driver", "rti_dvl"), self)
+		self.depth_adapter, depth_type = make_adapter(
+			DEPTH_ADAPTERS, self.get_param("depth/driver", "bar30"), self)
+
 		# Subscribers and caches
-		self.dvl_sub = Subscriber(self, DVL, DVL_TOPIC)
-		self.depth_sub = Subscriber(self, Depth, DEPTH_TOPIC)
+		self.dvl_sub = Subscriber(self, dvl_type, self.get_param("dvl/topic", DVL_TOPIC))
+		self.depth_sub = Subscriber(self, depth_type, self.get_param("depth/topic", DEPTH_TOPIC))
 		self.depth_cache = Cache(self.depth_sub, 1)
 
 		# Use point cloud for visualization
@@ -88,12 +90,12 @@ class DeadReckoningNode(BruceNode):
 		self.use_gyro = self.get_param("use_gyro")        # FOG gyroscope
 		self.use_imu = self.get_param("use_imu", True)    # VN100 MEMS IMU
 
-		# only subscribe to the IMU if we intend to use it
+		# only subscribe to the IMU if we intend to use it (standard sensor_msgs/Imu)
 		if self.use_imu:
-			if self.get_param("imu_version") == 1:
-				self.imu_sub = Subscriber(self, Imu, IMU_TOPIC)
-			else:
-				self.imu_sub = Subscriber(self, Imu, IMU_TOPIC_MK_II)
+			imu_topic = self.get_param("imu/topic", "")
+			if not imu_topic:
+				imu_topic = IMU_TOPIC if self.get_param("imu_version") == 1 else IMU_TOPIC_MK_II
+			self.imu_sub = Subscriber(self, Imu, imu_topic)
 
 		# define the callback based on the available orientation sources
 		if self.use_imu and self.use_gyro:
@@ -120,21 +122,24 @@ class DeadReckoningNode(BruceNode):
 		loginfo("Localization node is initialized")
 
 
-	def callback(self, imu_msg:Imu, dvl_msg:DVL)->None:
+	def callback(self, imu_msg:Imu, dvl_msg)->None:
 		"""Handle the dead reckoning using the VN100 and DVL only. Fuse and publish an odometry message.
 
 		Args:
 			imu_msg (Imu): the message from VN100
-			dvl_msg (DVL): the message from the DVL
+			dvl_msg: the raw DVL driver message (normalized via the DVL adapter)
 		"""
+		# normalize the DVL and depth via the configured adapters
+		dvl = self.dvl_adapter(dvl_msg)
 		#get the previous depth message
 		depth_msg = self.depth_cache.getLast()
 		#if there is no depth message, then skip this time step
 		if depth_msg is None:
 			return
+		depth = self.depth_adapter(depth_msg)
 
 		#check the delay between the depth message and the DVL
-		dd_delay = to_sec(depth_msg.header.stamp) - to_sec(dvl_msg.header.stamp)
+		dd_delay = to_sec(depth.header.stamp) - to_sec(dvl.header.stamp)
 		#print(dd_delay)
 		if abs(dd_delay) > 1.0:
 			logdebug("Missing depth message for {}".format(dd_delay))
@@ -153,34 +158,34 @@ class DeadReckoningNode(BruceNode):
 		# if use_gyro = True in Kalman and use_gyro = False in DeadReck, use this line:
 		# rot = gtsam.Rot3.Ypr(rot.yaw()-self.imu_yaw0, rot.pitch(), np.radians(90)+rot.roll())
 
-		# parse the DVL message into an array of velocites
-		vel = np.array([dvl_msg.velocity.x, dvl_msg.velocity.y, dvl_msg.velocity.z])
-
 		# package the odom message and publish it
-		self.send_odometry(vel,rot,dvl_msg.header.stamp,depth_msg.depth)
+		self.send_odometry(dvl.velocity,rot,dvl.header.stamp,depth.depth)
 
 
-	def callback_with_gyro(self, imu_msg:Imu, dvl_msg:DVL, gyro_msg:Odometry)->None:
+	def callback_with_gyro(self, imu_msg:Imu, dvl_msg, gyro_msg:Odometry)->None:
 		"""Handle the dead reckoning state estimate using the fiber optic gyro. Here we use the
 		Gyro as a means of getting the yaw estimate, roll and pitch are still VN100.
 
 		Args:
 			imu_msg (Imu): the vn100 imu message
-			dvl_msg (DVL): the DVL message
+			dvl_msg: the raw DVL driver message (normalized via the DVL adapter)
 			gyro_msg (Odometry): the integrated gyro odometry (from the gyro node)
 		"""
 		# decode the gyro message
 		gyro_yaw = r2g(gyro_msg.pose.pose).rotation().yaw()
 
+		# normalize the DVL and depth via the configured adapters
+		dvl = self.dvl_adapter(dvl_msg)
 		#get the previous depth message
 		depth_msg = self.depth_cache.getLast()
 
 		#if there is no depth message, then skip this time step
 		if depth_msg is None:
 			return
+		depth = self.depth_adapter(depth_msg)
 
 		#check the delay between the depth message and the DVL
-		dd_delay = to_sec(depth_msg.header.stamp) - to_sec(dvl_msg.header.stamp)
+		dd_delay = to_sec(depth.header.stamp) - to_sec(dvl.header.stamp)
 		#print(dd_delay)
 		if abs(dd_delay) > 1.0:
 			logdebug("Missing depth message for {}".format(dd_delay))
@@ -193,11 +198,8 @@ class DeadReckoningNode(BruceNode):
 		# Get a rotation matrix
 		rot = gtsam.Rot3.Ypr(gyro_yaw, rot.pitch(), rot.roll())
 
-		#parse the DVL message into an array of velocites
-		vel = np.array([dvl_msg.velocity.x, dvl_msg.velocity.y, dvl_msg.velocity.z])
-
 		# package the odom message and publish it
-		self.send_odometry(vel,rot,dvl_msg.header.stamp,depth_msg.depth)
+		self.send_odometry(dvl.velocity,rot,dvl.header.stamp,depth.depth)
 
 
 	def slam_heading_callback(self, odom_msg:Odometry)->None:
@@ -212,7 +214,7 @@ class DeadReckoningNode(BruceNode):
 		self.slam_yaw = r2g(odom_msg.pose.pose).rotation().yaw()
 
 
-	def callback_dvl_only(self, dvl_msg:DVL)->None:
+	def callback_dvl_only(self, dvl_msg)->None:
 		"""Dead reckon from the DVL and depth only, with no IMU or FOG.
 
 		When neither the VN100 IMU nor the KVH FOG is available there is no inertial
@@ -223,21 +225,21 @@ class DeadReckoningNode(BruceNode):
 		arrives the heading bootstraps at zero.
 
 		Args:
-			dvl_msg (DVL): the message from the DVL
+			dvl_msg: the raw DVL driver message (normalized via the DVL adapter)
 		"""
+		# normalize the DVL and depth via the configured adapters
+		dvl = self.dvl_adapter(dvl_msg)
 		# get the most recent depth measurement
 		depth_msg = self.depth_cache.getLast()
 		if depth_msg is None:
 			return
+		depth = self.depth_adapter(depth_msg)
 
 		# heading from the SLAM scan matcher (0 until the first SLAM estimate), level attitude
 		rot = gtsam.Rot3.Yaw(self.slam_yaw)
 
-		# parse the DVL message into an array of velocities
-		vel = np.array([dvl_msg.velocity.x, dvl_msg.velocity.y, dvl_msg.velocity.z])
-
 		# package the odom message and publish it
-		self.send_odometry(vel, rot, dvl_msg.header.stamp, depth_msg.depth)
+		self.send_odometry(dvl.velocity, rot, dvl.header.stamp, depth.depth)
 
 
 	def send_odometry(self,vel:np.array,rot:gtsam.Rot3,dvl_time,depth:float)->None:

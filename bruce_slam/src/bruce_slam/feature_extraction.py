@@ -9,8 +9,8 @@ from bruce_slam.utils.topics import *
 from bruce_slam.utils.conversions import *
 from bruce_slam.utils.visualization import apply_custom_colormap
 from bruce_slam import pcl
+from bruce_slam.sensors import SONAR_ADAPTERS, make_adapter
 import matplotlib.pyplot as plt
-from sonar_oculus.msg import OculusPing, OculusPingUncompressed
 from scipy.interpolate import interp1d
 
 from .utils import *
@@ -112,13 +112,18 @@ class FeatureExtraction(BruceNode):
         self.radius = self.get_param("visualization/radius")
         self.color = self.get_param("visualization/color")
 
+        # sonar driver (pluggable adapter + configurable topic). If sonar/driver
+        # is unset it defaults to the Oculus adapter matching compressed_images.
+        sonar_driver = self.get_param("sonar/driver", "")
+        if not sonar_driver:
+            sonar_driver = "oculus_compressed" if self.compressed_images else "oculus_uncompressed"
+        sonar_topic = self.get_param("sonar/topic", "")
+        if not sonar_topic:
+            sonar_topic = SONAR_TOPIC if self.compressed_images else SONAR_TOPIC_UNCOMPRESSED
+        self.sonar_adapter, sonar_type = make_adapter(SONAR_ADAPTERS, sonar_driver, self)
+
         #sonar subsciber
-        if self.compressed_images:
-            self.sonar_sub = self.create_subscription(
-                OculusPing, SONAR_TOPIC, self.callback, 10)
-        else:
-            self.sonar_sub = self.create_subscription(
-                OculusPingUncompressed, SONAR_TOPIC_UNCOMPRESSED, self.callback, 10)
+        self.sonar_sub = self.create_subscription(sonar_type, sonar_topic, self.callback, 10)
 
         #feature publish topic
         self.feature_pub = self.create_publisher(
@@ -137,12 +142,12 @@ class FeatureExtraction(BruceNode):
         ping: OculusPing message
         '''
 
-        #get the parameters from the ping message
+        #get the parameters from the ping message (bearings are in radians)
         _res = ping.range_resolution
         _height = ping.num_ranges * _res
         _rows = ping.num_ranges
         _width = np.sin(
-            self.to_rad(ping.bearings[-1] - ping.bearings[0]) / 2) * _height * 2
+            (ping.bearings[-1] - ping.bearings[0]) / 2) * _height * 2
         _cols = int(np.ceil(_width / _res))
 
         #check if the parameters have changed
@@ -152,8 +157,8 @@ class FeatureExtraction(BruceNode):
         #if they have changed do some work
         self.res, self.height, self.rows, self.width, self.cols = _res, _height, _rows, _width, _cols
 
-        #generate the mapping
-        bearings = self.to_rad(np.asarray(ping.bearings, dtype=np.float32))
+        #generate the mapping (bearings already in radians)
+        bearings = np.asarray(ping.bearings, dtype=np.float32)
         f_bearings = interp1d(
             bearings,
             range(len(bearings)),
@@ -194,32 +199,26 @@ class FeatureExtraction(BruceNode):
     #@add_lock
     def callback(self, sonar_msg):
         '''Feature extraction callback
-        sonar_msg: an OculusPing messsage, in polar coordinates
+        sonar_msg: the raw sonar driver message; normalized to a SonarPing (polar,
+        grayscale image + geometry) via the configured sonar adapter.
         '''
 
-        if sonar_msg.ping_id % self.skip != 0:
+        #normalize the driver message to a SonarPing
+        ping = self.sonar_adapter(sonar_msg)
+
+        if ping.ping_id % self.skip != 0:
             self.feature_img = None
             # Don't extract features in every frame.
             # But we still need empty point cloud for synchronization in SLAM node.
             nan = np.array([[np.nan, np.nan]])
-            self.publish_features(sonar_msg, nan)
+            self.publish_features(ping, nan)
             return
 
-        #decode the compressed image
-        if self.compressed_images == True:
-            img = np.frombuffer(sonar_msg.ping.data,np.uint8)
-            img = np.array(cv2.imdecode(img,cv2.IMREAD_COLOR)).astype(np.uint8)
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
-        #the image is not compressed, just use cv_bridge
-        else:
-            img = np.array(
-                self.BridgeInstance.imgmsg_to_cv2(sonar_msg.ping, desired_encoding="passthrough"),
-                dtype=np.uint8,
-            )
+        #the adapter already decoded the polar image to grayscale
+        img = ping.image
 
         #generate a mesh grid mapping from polar to cartisian
-        self.generate_map_xy(sonar_msg)
+        self.generate_map_xy(ping)
 
         # Detect targets and check against threshold using CFAR (in polar coordinates)
         peaks = self.detector.detect(img, self.alg)
@@ -251,4 +250,4 @@ class FeatureExtraction(BruceNode):
             )
 
         #publish the feature message
-        self.publish_features(sonar_msg, points)
+        self.publish_features(ping, points)

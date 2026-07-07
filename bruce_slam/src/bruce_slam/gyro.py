@@ -4,11 +4,10 @@ from std_msgs.msg import Header
 import gtsam
 from scipy.spatial.transform import Rotation
 
-from kvh_gyro.msg import gyro
-
 from bruce_slam.utils.topics import *
 from bruce_slam.utils.conversions import *
 from bruce_slam.utils.io import *
+from bruce_slam.sensors import GYRO_ADAPTERS, make_adapter
 
 
 class GyroFilter(BruceNode):
@@ -39,23 +38,30 @@ class GyroFilter(BruceNode):
 		self.earth_rate = -15.04107 * np.sin(self.latitude) / 3600.0
 		self.sensor_rate = self.get_param("sensor_rate")
 
+		# gyro driver (pluggable adapter + configurable topic)
+		self.gyro_adapter, gyro_type = make_adapter(
+			GYRO_ADAPTERS, self.get_param("gyro/driver", "kvh_gyro"), self)
+
 		# define tf transformer and gyro sub
 		self.odom_pub = self.create_publisher(Odometry, GYRO_INTEGRATION_TOPIC, self.sensor_rate+50)
-		self.gyro_sub = self.create_subscription(gyro, GYRO_TOPIC, self.callback, self.sensor_rate+50)
+		self.gyro_sub = self.create_subscription(
+			gyro_type, self.get_param("gyro/topic", GYRO_TOPIC), self.callback, self.sensor_rate+50)
 
 		loginfo("Gyro filtering node is initialized")
 
 
-	def callback(self, gyro_msg:gyro)->None:
+	def callback(self, gyro_msg)->None:
 		"""Callback function, takes in the raw gyro readings (delta angles) and
 		updates the estimate of euler angles. Publishes these angles as a ROS odometry message.
 
 		Args:
-			gyro_msg (gyro): the incoming gyro message, these are delta angles not rotation rates.
+			gyro_msg: the raw gyro driver message (normalized via the gyro adapter); the
+				delta values are delta angles not rotation rates.
 		"""
 
 		# parse message and apply the offset matrix
-		dx,dy,dz = list(gyro_msg.delta)
+		reading = self.gyro_adapter(gyro_msg)
+		dx,dy,dz = reading.delta
 		arr = np.array([dx,dy,dz])
 		arr = arr.dot(self.offset_matrix)
 		delta_yaw, delta_pitch, delta_roll = arr
@@ -74,7 +80,7 @@ class GyroFilter(BruceNode):
 
 		# publish an odom message
 		header = Header()
-		header.stamp = gyro_msg.header.stamp
+		header.stamp = reading.header.stamp
 		header.frame_id = "odom"
 		odom_msg = Odometry()
 		odom_msg.header = header

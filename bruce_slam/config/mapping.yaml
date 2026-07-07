@@ -33,3 +33,8 @@
 
     min_translation: 0.5
     min_rotation: 0.015
+
+    # sonar driver (pluggable adapter, see bruce_slam/sensors.py)
+    sonar:
+      driver: oculus_compressed   # oculus_compressed | oculus_uncompressed | image
+      topic: /sonar_oculus_node/M750d/ping

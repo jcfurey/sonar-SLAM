@@ -205,7 +205,8 @@ class OculusProperty(object):
 
         if len(ping.bearings) != self.num_bearings:
             self.num_bearings = len(ping.bearings)
-            self.bearings = np.deg2rad(np.array(ping.bearings, np.float32) / 100)
+            # bearings arrive already in radians from the sonar adapter
+            self.bearings = np.array(ping.bearings, np.float32)
             self.horizontal_aperture = abs(self.bearings[-1] - self.bearings[0])
             self.angular_resolution = self.horizontal_aperture / self.num_bearings
             self.vertical_aperture = OculusProperty.OCULUS_VERTICAL_APERTURE[
