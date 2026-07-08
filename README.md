@@ -122,7 +122,7 @@ topic is configurable.
 | Depth | `depth.driver` / `depth.topic` | `bar30` (default), `fluid_pressure` (`sensor_msgs/FluidPressure`) |
 | Gyro (FOG) | `gyro.driver` / `gyro.topic` | `kvh_gyro` (default), `vector3_stamped` (`geometry_msgs/Vector3Stamped`) |
 | Sonar | `sonar.driver` / `sonar.topic` | `oculus_compressed`, `oculus_uncompressed` (Oculus, default), `image` (plain grayscale `sensor_msgs/Image` + `sonar.range_resolution` / `sonar.horizontal_fov`) |
-| IMU | `imu.topic` | standard `sensor_msgs/Imu` |
+| IMU | `imu.driver` / `imu.topic` | standard `sensor_msgs/Imu`; `vn100` (legacy VectorNav frame handling, default), `enu` (any REP-105 ENU AHRS — **MicroStrain 3DM-GX5** via `microstrain_inertial_driver`; aliases `3dm_gx5`, `microstrain`; no magic frame offsets needed, set `imu_pose` to the physical mounting) |
 
 Defaults reproduce the original hardware exactly. To use different hardware, set
 the `driver`/`topic` in the relevant config file (see the commented examples in
@@ -136,13 +136,19 @@ This SLAM system has many parameters, please read the wiki for an explanation of
 
 ## Dead-reckoning / localization modes
 
-The localization node (`dead_reckoning.yaml`) supports three orientation-source modes:
+The localization node (`dead_reckoning.yaml`) supports four orientation-source modes:
 
 | `use_imu` | `use_gyro` | Mode |
 | --- | --- | --- |
-| `true` | `false` | VN100 IMU (roll/pitch/yaw) + DVL — **default** |
-| `true` | `true` | VN100 IMU (roll/pitch) + KVH FOG (yaw) + DVL |
-| `false` | `false` | **DVL + depth only** — no inertial sensor; heading is taken from the SLAM scan matcher (fed back on `slam/odom`) and the DVL velocities are rotated by it. Bootstraps at zero until the first SLAM estimate. Reduced-accuracy fallback for platforms without an IMU/FOG. |
+| `true` | `false` | IMU (roll/pitch/yaw) + DVL — **default** |
+| `true` | `true` | IMU (roll/pitch) + KVH FOG (yaw) + DVL |
+| `false` | `true` | **FOG only** — yaw from the gyro, roll/pitch assumed level (fixed-depth 3-DOF model) + DVL |
+| `false` | `false` | **DVL + depth only** — no inertial sensor; heading is taken from the SLAM scan matcher (fed back on `slam/odom`) and the DVL velocities are rotated by it. `seed_heading` (degrees) sets the initial heading until the first SLAM estimate. Reduced-accuracy fallback for platforms without an IMU/FOG. |
+
+The IMU itself is pluggable via `imu.driver`: keep `vn100` for the original
+VectorNav setup, or use `enu` / `3dm_gx5` for a MicroStrain 3DM-GX5 (or any
+REP-105-compliant AHRS) — the adapter converts the ENU/FLU orientation into the
+pipeline's z-down convention so no hand-tuned frame offsets are required.
 
 # Current To Do list
 - enhance some of the cpp documentation for CFAR

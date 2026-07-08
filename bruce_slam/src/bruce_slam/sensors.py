@@ -1,14 +1,19 @@
 """Pluggable sensor adapters.
 
 `bruce_slam` decouples the SLAM/localization algorithms from any particular
-hardware driver through a small adapter registry. Each sensor kind (``dvl``,
-``depth``, ``gyro``, ``sonar``) has named driver adapters; a node selects one by
-parameter, the adapter declares its ROS 2 message type (resolved at runtime, so
-unused driver packages need not be installed), and normalizes each message into
-a small reading object the algorithm consumes.
+hardware driver through a small adapter registry. Each sensor kind (``imu``,
+``dvl``, ``depth``, ``gyro``, ``sonar``) has named driver adapters; a node
+selects one by parameter, the adapter declares its ROS 2 message type (resolved
+at runtime, so unused driver packages need not be installed), and normalizes
+each message into a small reading object the algorithm consumes.
 
-The IMU is intentionally not adapted: it already uses the standard
-``sensor_msgs/Imu`` message, so only its topic is configurable.
+Every IMU adapter consumes the standard ``sensor_msgs/Imu`` message — what
+differs between drivers is the FRAME convention of the reported orientation.
+The ``vn100`` adapter passes the quaternion through untouched and the nodes
+apply the historic VN100 offsets; the ``enu`` adapter (MicroStrain 3DM-GX5 via
+``microstrain_inertial_driver``, or any REP-105-compliant AHRS) converts the
+ENU-referenced FLU orientation into the z-down NED/FRD convention this
+pipeline uses, so no magic offsets are needed.
 
 Adding support for a new sensor is a matter of writing a small adapter class and
 registering it in the appropriate ``*_ADAPTERS`` dict below.
@@ -17,6 +22,7 @@ registering it in the appropriate ``*_ADAPTERS`` dict below.
 import numpy as np
 import cv2
 import cv_bridge
+from scipy.spatial.transform import Rotation
 from rosidl_runtime_py.utilities import get_message
 
 
@@ -55,6 +61,22 @@ class GyroReading(object):
     def __init__(self, header, delta):
         self.header = header
         self.delta = np.asarray(delta, dtype=float)  # [dx, dy, dz] (rad)
+
+
+class ImuReading(object):
+    """Normalized IMU reading.
+
+    ``orientation`` is the attitude quaternion as [x, y, z, w] in the frame
+    convention the adapter's docstring states (the ``vn100`` adapter passes the
+    driver frame through; the ``enu`` adapter delivers the pipeline's z-down
+    convention).
+    """
+
+    __slots__ = ("header", "orientation")
+
+    def __init__(self, header, orientation):
+        self.header = header
+        self.orientation = [float(v) for v in orientation]  # [x, y, z, w]
 
 
 class FireMsg(object):
@@ -119,6 +141,58 @@ class SensorAdapter(object):
     @classmethod
     def message_class(cls):
         return get_message(cls.msg_type)
+
+
+# ---------------------------------------------------------------------------
+# IMU adapters
+# ---------------------------------------------------------------------------
+class Vn100ImuAdapter(SensorAdapter):
+    """VectorNav VN100 (legacy). Passes the driver-frame quaternion through
+    unchanged; the consuming node applies the historic VN100 frame offsets
+    (imu_pose mounting rotation and the fixed roll offsets).
+    """
+
+    msg_type = "sensor_msgs/msg/Imu"
+    legacy_frame = True
+
+    def __call__(self, msg):
+        q = msg.orientation
+        return ImuReading(msg.header, [q.x, q.y, q.z, q.w])
+
+
+class EnuImuAdapter(SensorAdapter):
+    """REP-105-compliant ENU AHRS — e.g. the MicroStrain 3DM-GX5 family via
+    ``microstrain_inertial_driver`` (default ``use_enu_frame: true``), or any
+    driver reporting a body-FLU orientation with respect to a world-ENU frame.
+
+    Converts the orientation into the z-down NED/FRD convention this pipeline
+    uses (depth positive down, compass-signed yaw):
+    ``R_out = R_ned<-enu * R_in * R_flu<-frd`` where both correction matrices
+    are the standard involutive ENU<->NED and FLU<->FRD swaps. Residual
+    mounting misalignment is still handled by the node's ``imu_pose`` param.
+    """
+
+    msg_type = "sensor_msgs/msg/Imu"
+    legacy_frame = False
+
+    # world-side: ENU -> NED (swap x/y, negate z); body-side: FLU -> FRD
+    _R_NED_ENU = Rotation.from_matrix([[0, 1, 0], [1, 0, 0], [0, 0, -1]])
+    _R_FLU_FRD = Rotation.from_matrix([[1, 0, 0], [0, -1, 0], [0, 0, -1]])
+
+    def __call__(self, msg):
+        q = msg.orientation
+        r = Rotation.from_quat([q.x, q.y, q.z, q.w])
+        r = EnuImuAdapter._R_NED_ENU * r * EnuImuAdapter._R_FLU_FRD
+        return ImuReading(msg.header, r.as_quat())
+
+
+IMU_ADAPTERS = {
+    "vn100": Vn100ImuAdapter,
+    "enu": EnuImuAdapter,
+    # aliases for discoverability
+    "3dm_gx5": EnuImuAdapter,
+    "microstrain": EnuImuAdapter,
+}
 
 
 # ---------------------------------------------------------------------------

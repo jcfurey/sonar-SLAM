@@ -14,7 +14,7 @@ from bruce_slam.utils.topics import *
 from bruce_slam.utils.conversions import *
 from bruce_slam.utils.io import *
 from bruce_slam.utils.visualization import ros_colorline_trajectory
-from bruce_slam.sensors import DVL_ADAPTERS, DEPTH_ADAPTERS, make_adapter
+from bruce_slam.sensors import DVL_ADAPTERS, DEPTH_ADAPTERS, IMU_ADAPTERS, make_adapter
 
 
 class DeadReckoningNode(BruceNode):
@@ -94,28 +94,47 @@ class DeadReckoningNode(BruceNode):
 		self.use_gyro = self.get_param("use_gyro")        # FOG gyroscope
 		self.use_imu = self.get_param("use_imu", True)    # VN100 MEMS IMU
 
-		# only subscribe to the IMU if we intend to use it (standard sensor_msgs/Imu)
+		# only subscribe to the IMU if we intend to use it. All IMU drivers use
+		# the standard sensor_msgs/Imu message; the adapter handles the frame
+		# convention ('vn100' keeps the historic offsets, 'enu' suits any
+		# REP-105 AHRS such as the MicroStrain 3DM-GX5).
 		self.imu_topic = None
 		if self.use_imu:
+			imu_driver = self.get_param("imu/driver", "vn100")
+			self.imu_adapter, imu_type = make_adapter(IMU_ADAPTERS, imu_driver, self)
 			imu_topic = self.get_param("imu/topic", "")
 			if not imu_topic:
-				imu_topic = IMU_TOPIC if self.get_param("imu_version") == 1 else IMU_TOPIC_MK_II
+				if self.imu_adapter.legacy_frame:
+					imu_topic = IMU_TOPIC if self.get_param("imu_version") == 1 else IMU_TOPIC_MK_II
+				else:
+					imu_topic = IMU_TOPIC_ENU
 			self.imu_topic = imu_topic
-			self.imu_sub = Subscriber(self, Imu, imu_topic)
+			self.imu_sub = Subscriber(self, imu_type, imu_topic)
 
 		# define the callback based on the available orientation sources
 		if self.use_imu and self.use_gyro:
-			# VN100 (roll/pitch) + FOG (yaw) + DVL
+			# IMU (roll/pitch) + FOG (yaw) + DVL
 			self.gyro_sub = Subscriber(self, Odometry, GYRO_INTEGRATION_TOPIC)
 			self.ts = ApproximateTimeSynchronizer([self.imu_sub, self.dvl_sub, self.gyro_sub], 300, .1)
 			self.ts.registerCallback(self.callback_with_gyro)
 		elif self.use_imu:
-			# VN100 (roll/pitch/yaw) + DVL
+			# IMU (roll/pitch/yaw) + DVL
 			self.ts = ApproximateTimeSynchronizer([self.imu_sub, self.dvl_sub], 200, .1)
 			self.ts.registerCallback(self.callback)
+		elif self.use_gyro:
+			# FOG only, no IMU: yaw from the gyro, roll/pitch assumed level
+			# (consistent with the fixed-depth 3-DOF motion model)
+			self.gyro_sub = Subscriber(self, Odometry, GYRO_INTEGRATION_TOPIC)
+			self.ts = ApproximateTimeSynchronizer([self.dvl_sub, self.gyro_sub], 300, .1)
+			self.ts.registerCallback(self.callback_gyro_only)
+			logwarn(
+				"Localization running in gyro-only mode (no IMU); "
+				"roll/pitch assumed level.")
 		else:
 			# No IMU and no FOG: dead reckon from the DVL and depth only, taking the
 			# heading from the SLAM scan matcher (fed back on SLAM_ODOM_TOPIC).
+			# seed_heading (degrees) sets the heading until the first SLAM estimate.
+			self.slam_yaw = np.radians(self.get_param("seed_heading", 0.0))
 			self.dvl_sub.registerCallback(self.callback_dvl_only)
 			self.slam_sub = self.create_subscription(
 				Odometry, SLAM_ODOM_TOPIC, self.slam_heading_callback, 10)
@@ -128,11 +147,25 @@ class DeadReckoningNode(BruceNode):
 		loginfo("Localization node is initialized")
 
 
-	def callback(self, imu_msg:Imu, dvl_msg)->None:
-		"""Handle the dead reckoning using the VN100 and DVL only. Fuse and publish an odometry message.
+	def imu_rotation(self, imu_msg:Imu)->gtsam.Rot3:
+		"""Normalize the IMU orientation via the configured adapter and apply the
+		mounting rotation (imu_pose).
 
 		Args:
-			imu_msg (Imu): the message from VN100
+			imu_msg (Imu): the raw IMU message
+
+		Returns:
+			gtsam.Rot3: the vehicle attitude
+		"""
+		rot = n2g(self.imu_adapter(imu_msg).orientation, "Quaternion")
+		return rot.compose(self.imu_rot.inverse())
+
+
+	def callback(self, imu_msg:Imu, dvl_msg)->None:
+		"""Handle the dead reckoning using the IMU and DVL only. Fuse and publish an odometry message.
+
+		Args:
+			imu_msg (Imu): the message from the IMU
 			dvl_msg: the raw DVL driver message (normalized via the DVL adapter)
 		"""
 		# normalize the DVL and depth via the configured adapters
@@ -150,19 +183,20 @@ class DeadReckoningNode(BruceNode):
 		if abs(dd_delay) > 1.0:
 			logdebug("Missing depth message for {}".format(dd_delay))
 
-		#convert the imu message from msg to gtsam rotation object
-		rot = r2g(imu_msg.orientation)
-		rot = rot.compose(self.imu_rot.inverse())
+		#normalize the imu orientation (adapter + mounting rotation)
+		rot = self.imu_rotation(imu_msg)
 
 		#if we have no yaw yet, set this one as zero
 		if self.imu_yaw0 is None:
 			self.imu_yaw0 = rot.yaw()
 
-		# Get a rotation matrix
-		# if use_gyro has the same value in Kalman and DeadReck, use this line
-		rot = gtsam.Rot3.Ypr(rot.yaw()-self.imu_yaw0, rot.pitch(), np.radians(90)+rot.roll())
-		# if use_gyro = True in Kalman and use_gyro = False in DeadReck, use this line:
-		# rot = gtsam.Rot3.Ypr(rot.yaw()-self.imu_yaw0, rot.pitch(), np.radians(90)+rot.roll())
+		# Get a rotation matrix. The fixed 90-degree roll offset is part of the
+		# historic VN100 frame handling and only applies to the legacy driver;
+		# frame-normalizing adapters (e.g. 'enu') need no offset.
+		roll = rot.roll()
+		if self.imu_adapter.legacy_frame:
+			roll += np.radians(90)
+		rot = gtsam.Rot3.Ypr(rot.yaw()-self.imu_yaw0, rot.pitch(), roll)
 
 		# package the odom message and publish it
 		self.send_odometry(dvl.velocity,rot,dvl.header.stamp,depth.depth)
@@ -170,10 +204,10 @@ class DeadReckoningNode(BruceNode):
 
 	def callback_with_gyro(self, imu_msg:Imu, dvl_msg, gyro_msg:Odometry)->None:
 		"""Handle the dead reckoning state estimate using the fiber optic gyro. Here we use the
-		Gyro as a means of getting the yaw estimate, roll and pitch are still VN100.
+		Gyro as a means of getting the yaw estimate, roll and pitch are still from the IMU.
 
 		Args:
-			imu_msg (Imu): the vn100 imu message
+			imu_msg (Imu): the raw IMU message
 			dvl_msg: the raw DVL driver message (normalized via the DVL adapter)
 			gyro_msg (Odometry): the integrated gyro odometry (from the gyro node)
 		"""
@@ -196,16 +230,40 @@ class DeadReckoningNode(BruceNode):
 		if abs(dd_delay) > 1.0:
 			logdebug("Missing depth message for {}".format(dd_delay))
 
-		#convert the imu message from msg to gtsam rotation object
-		rot = r2g(imu_msg.orientation)
-		rot = rot.compose(self.imu_rot.inverse())
-
+		#normalize the imu orientation (adapter + mounting rotation)
+		rot = self.imu_rotation(imu_msg)
 
 		# Get a rotation matrix
 		rot = gtsam.Rot3.Ypr(gyro_yaw, rot.pitch(), rot.roll())
 
 		# package the odom message and publish it
 		self.send_odometry(dvl.velocity,rot,dvl.header.stamp,depth.depth)
+
+
+	def callback_gyro_only(self, dvl_msg, gyro_msg:Odometry)->None:
+		"""Dead reckon with the fiber optic gyro but NO IMU: yaw comes from the
+		integrated gyro, roll and pitch are assumed level (consistent with the
+		fixed-depth 3-DOF motion model).
+
+		Args:
+			dvl_msg: the raw DVL driver message (normalized via the DVL adapter)
+			gyro_msg (Odometry): the integrated gyro odometry (from the gyro node)
+		"""
+		# decode the gyro message
+		gyro_yaw = r2g(gyro_msg.pose.pose).rotation().yaw()
+
+		# normalize the DVL and depth via the configured adapters
+		dvl = self.dvl_adapter(dvl_msg)
+		depth_msg = self.depth_cache.getLast()
+		if depth_msg is None:
+			return
+		depth = self.depth_adapter(depth_msg)
+
+		# yaw from the gyro, level attitude
+		rot = gtsam.Rot3.Yaw(gyro_yaw)
+
+		# package the odom message and publish it
+		self.send_odometry(dvl.velocity, rot, dvl.header.stamp, depth.depth)
 
 
 	def slam_heading_callback(self, odom_msg:Odometry)->None:

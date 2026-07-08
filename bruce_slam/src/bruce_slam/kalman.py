@@ -15,7 +15,7 @@ from sensor_msgs.msg import Imu
 from bruce_slam.utils.topics import *
 from bruce_slam.utils.conversions import *
 from bruce_slam.utils.io import *
-from bruce_slam.sensors import DVL_ADAPTERS, DEPTH_ADAPTERS, GYRO_ADAPTERS, make_adapter
+from bruce_slam.sensors import DVL_ADAPTERS, DEPTH_ADAPTERS, GYRO_ADAPTERS, IMU_ADAPTERS, make_adapter
 
 
 def euler_from_quaternion(quat):
@@ -83,11 +83,18 @@ class KalmanNode(BruceNode):
 		self.depth_adapter, depth_type = make_adapter(
 			DEPTH_ADAPTERS, self.get_param("depth/driver", "bar30"), self)
 
-		# IMU (standard sensor_msgs/Imu), topic configurable
+		# IMU (standard sensor_msgs/Imu). The adapter handles the frame
+		# convention ('vn100' legacy, 'enu' for a REP-105 AHRS such as the
+		# MicroStrain 3DM-GX5 — set imu_offset to 0 with 'enu').
+		self.imu_adapter, imu_type = make_adapter(
+			IMU_ADAPTERS, self.get_param("imu/driver", "vn100"), self)
 		imu_topic = self.get_param("imu/topic", "")
 		if not imu_topic:
-			imu_topic = IMU_TOPIC if self.get_param("imu_version") == 1 else IMU_TOPIC_MK_II
-		self.imu_sub = self.create_subscription(Imu, imu_topic, self.imu_callback, 250)
+			if self.imu_adapter.legacy_frame:
+				imu_topic = IMU_TOPIC if self.get_param("imu_version") == 1 else IMU_TOPIC_MK_II
+			else:
+				imu_topic = IMU_TOPIC_ENU
+		self.imu_sub = self.create_subscription(imu_type, imu_topic, self.imu_callback, 250)
 
 		# define the other subcribers
 		self.dvl_sub = self.create_subscription(
@@ -206,8 +213,9 @@ class KalmanNode(BruceNode):
 		# Kalman prediction
 		predicted_x, predicted_P = self.kalman_predict(self.state_vector, self.cov_matrix, self.A_imu)
 
-		# parse the IMU measurnment
-		roll_x, pitch_y, yaw_z = euler_from_quaternion((imu_msg.orientation.x,imu_msg.orientation.y,imu_msg.orientation.z,imu_msg.orientation.w))
+		# parse the IMU measurnment (normalized via the configured adapter);
+		# imu_offset remains a config-driven correction (0 for the 'enu' driver)
+		roll_x, pitch_y, yaw_z = euler_from_quaternion(self.imu_adapter(imu_msg).orientation)
 		euler_angle = np.array([[self.imu_offset+roll_x], [pitch_y], [yaw_z]])
 
 		#if we have no yaw yet, set this one as zero

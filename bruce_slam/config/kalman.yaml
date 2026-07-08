@@ -26,7 +26,8 @@
       driver: kvh_gyro         # kvh_gyro | vector3_stamped
       topic: /gyro
     imu:
-      topic: ""                # blank -> derived from imu_version
+      driver: vn100            # vn100 (legacy frame) | enu (REP-105 AHRS, e.g. 3DM-GX5; set imu_offset: 0)
+      topic: ""                # blank -> derived from imu_version (vn100) or /imu/data (enu)
 
     # state = (x,y,z,roll,pitch,yaw, x_dot,y_dot,z_dot, roll_dot,pitch_dot,yaw_dot)
     state_vector: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
