@@ -1,7 +1,6 @@
 import numpy as np
 from scipy.interpolate import interp1d
 import cv2
-import rospy
 
 from .utils.topics import *
 from .utils.conversions import r2n
@@ -181,11 +180,14 @@ class OculusProperty(object):
     def configure(self, ping):
         self.fire_msg.configure(ping)
 
-        if "part_number" not in ping.__slots__:
-            # backward compatibility
-            self.model = "M750d"
-        else:
+        if (
+            hasattr(ping, "part_number")
+            and ping.part_number in OculusProperty.OCULUS_PART_NUMBER
+        ):
             self.model = OculusProperty.OCULUS_PART_NUMBER[ping.part_number]
+        else:
+            # backward compatibility / unknown part number
+            self.model = "M750d"
 
         changed = False
         if (
@@ -203,12 +205,15 @@ class OculusProperty(object):
 
         if len(ping.bearings) != self.num_bearings:
             self.num_bearings = len(ping.bearings)
-            self.bearings = np.deg2rad(np.array(ping.bearings, np.float32) / 100)
+            # bearings arrive already in radians from the sonar adapter
+            self.bearings = np.array(ping.bearings, np.float32)
             self.horizontal_aperture = abs(self.bearings[-1] - self.bearings[0])
             self.angular_resolution = self.horizontal_aperture / self.num_bearings
-            self.vertical_aperture = OculusProperty.OCULUS_VERTICAL_APERTURE[
-                self.fire_msg.mode
-            ]
+            # default to the low-frequency aperture for unknown fire modes
+            # (e.g. Oculus flexi mode 0) instead of raising KeyError
+            self.vertical_aperture = OculusProperty.OCULUS_VERTICAL_APERTURE.get(
+                self.fire_msg.mode, OculusProperty.OCULUS_VERTICAL_APERTURE[1]
+            )
 
             self.b2c = interp1d(
                 self.bearings,

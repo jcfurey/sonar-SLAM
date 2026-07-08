@@ -63,7 +63,7 @@ class Keyframe(object):
     def __init__(
         self,
         status: bool,
-        time: rospy.Time,
+        time,
         dr_pose3: gtsam.Pose3,
         points: np.array = np.zeros((0, 2), np.float32),
         cov: np.array = None,
@@ -77,7 +77,7 @@ class Keyframe(object):
 
         Args:
             status (bool): is this frame a keyframe?
-            time (rospy.Time): timestamp from incoming message
+            time: timestamp from incoming message (builtin_interfaces/Time)
             dr_pose3 (gtsam.Pose3): dead reckoning pose
             points (np.array, optional): point cloud array. Defaults to np.zeros((0, 2), np.float32).
             cov (np.array, optional): covariance matrix. Defaults to None.

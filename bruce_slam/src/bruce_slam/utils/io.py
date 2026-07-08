@@ -1,14 +1,88 @@
-import time
 import timeit
 from functools import wraps
 import numpy as np
 from tqdm.auto import tqdm
 from threading import Event
-import rospy
+
+import rclpy
+from rclpy.node import Node
+from rclpy.qos import QoSProfile, QoSDurabilityPolicy, QoSHistoryPolicy, QoSReliabilityPolicy
+
+from .conversions import to_sec
 
 offline = False
 callback_lock_event = Event()
 callback_lock_event.set()
+
+# module level logger, usable before/without a node being constructed
+_LOGGER = rclpy.logging.get_logger("bruce_slam")
+
+
+def latched_qos(depth: int = 1) -> QoSProfile:
+    """QoS profile approximating a ROS 1 "latched" publisher.
+
+    Late-joining subscribers receive the last published message.
+
+    Args:
+        depth (int): the history depth. Defaults to 1.
+
+    Returns:
+        QoSProfile: a transient-local, reliable, keep-last profile
+    """
+
+    return QoSProfile(
+        depth=depth,
+        history=QoSHistoryPolicy.KEEP_LAST,
+        reliability=QoSReliabilityPolicy.RELIABLE,
+        durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+    )
+
+
+class BruceNode(Node):
+    """Common base class for all bruce_slam ROS 2 nodes.
+
+    Parameters supplied through launch files / YAML overrides are declared
+    automatically, and :meth:`get_param` mimics the old ``rospy.get_param``
+    behaviour (including translating ROS 1 style ``a/b`` names to ROS 2 ``a.b``).
+    """
+
+    def __init__(self, node_name: str, **kwargs):
+        super().__init__(
+            node_name,
+            automatically_declare_parameters_from_overrides=True,
+            **kwargs,
+        )
+
+    # sentinel distinguishing "no default supplied" from an explicit None
+    _REQUIRED = object()
+
+    def get_param(self, name: str, default=_REQUIRED):
+        """Fetch a parameter value, declaring it if necessary.
+
+        Args:
+            name (str): the parameter name (``~foo`` and ``a/b`` are accepted)
+            default: value to declare/return when the parameter is not provided.
+                Omit it to make the parameter required.
+
+        Raises:
+            KeyError: if the parameter is required (no default) and not set —
+                mirroring ``rospy.get_param``'s behaviour. (Declaring a missing
+                parameter with a ``None`` default would make rclpy raise an
+                opaque type-inference error instead.)
+
+        Returns:
+            the parameter value
+        """
+
+        name = name.lstrip("~").replace("/", ".")
+        if not self.has_parameter(name):
+            if default is BruceNode._REQUIRED or default is None:
+                raise KeyError(
+                    "Required parameter '{}' is not set for node '{}'. "
+                    "Check the YAML/launch configuration.".format(name, self.get_name())
+                )
+            self.declare_parameter(name, default)
+        return self.get_parameter(name).value
 
 
 def add_lock(callback):
@@ -81,28 +155,28 @@ def loginfo(msg):
     if offline:
         tqdm.write(msg)
     else:
-        rospy.loginfo(msg)
+        _LOGGER.info(str(msg))
 
 
 def logdebug(msg):
     if offline:
         tqdm.write(colorlog(LOGCOLORS.BLUE, msg))
     else:
-        rospy.logdebug(msg)
+        _LOGGER.debug(str(msg))
 
 
 def logwarn(msg):
     if offline:
         tqdm.write(colorlog(LOGCOLORS.YELLOW, msg))
     else:
-        rospy.logwarn(msg)
+        _LOGGER.warn(str(msg))
 
 
 def logerror(msg):
     if offline:
         tqdm.write(colorlog(LOGCOLORS.RED, msg))
     else:
-        rospy.logerror(msg)
+        _LOGGER.error(str(msg))
 
 
 def common_parser(description="node"):
@@ -110,7 +184,7 @@ def common_parser(description="node"):
 
     parser = argparse.ArgumentParser(description=description)
 
-    parser.add_argument("--file", type=str, default="", help="ROS bag file")
+    parser.add_argument("--file", type=str, default="", help="ROS 2 bag (directory)")
     parser.add_argument(
         "--start",
         type=float,
@@ -127,51 +201,68 @@ def common_parser(description="node"):
     return parser
 
 
-def read_bag(file, start=None, duration=None, progress=True):
-    import rosbag
-    # from .topics import IMU_TOPIC, DVL_TOPIC, DEPTH_TOPIC, SONAR_TOPIC
+def read_bag(file, start=None, duration=None, progress=True, topics=None):
+    """Iterate over (topic, deserialized message) pairs in a ROS 2 bag.
 
-    bag = rosbag.Bag(file)
+    Uses ``rosbag2_py``; the storage plugin is auto-detected from the bag
+    metadata (works for sqlite3 and mcap on Humble and newer). ``file`` is the
+    bag *directory* (or a single storage file), not a ROS 1 ``.bag``.
+
+    Args:
+        file (str): path to the rosbag2 directory / storage file
+        start (float): seconds into the bag to start (default 0)
+        duration (float): seconds to read from ``start`` (default: to the end)
+        progress (bool): show a tqdm progress bar
+        topics (list): optional list of topics to restrict to
+
+    Yields:
+        (str, Any): topic name and deserialized message
+    """
+
+    import rosbag2_py
+    from rclpy.serialization import deserialize_message
+    from rosidl_runtime_py.utilities import get_message
+
+    reader = rosbag2_py.SequentialReader()
+    storage_options = rosbag2_py.StorageOptions(uri=file, storage_id="")
+    converter_options = rosbag2_py.ConverterOptions(
+        input_serialization_format="cdr", output_serialization_format="cdr"
+    )
+    reader.open(storage_options, converter_options)
+
+    type_map = {t.name: t.type for t in reader.get_all_topics_and_types()}
+    if topics is not None:
+        reader.set_filter(rosbag2_py.StorageFilter(topics=list(topics)))
+
     start = start if start is not None else 0
-    start_time = bag.get_start_time() + start
-    end_time = bag.get_end_time()
-    if duration is None or duration < 0 or duration == float("inf"):
-        duration = end_time - start_time
-    else:
-        end_time = start_time + duration
+    start_ns = None
+    end_ns = None
+    pbar = None
 
-    if progress:
-        pbar = tqdm(total=int(duration), unit="s")
-    for topic, msg, t in bag.read_messages(
-        # topics=[IMU_TOPIC, DVL_TOPIC, DEPTH_TOPIC, SONAR_TOPIC],
-        start_time=rospy.Time.from_sec(start_time),
-        end_time=rospy.Time.from_sec(end_time),
-    ):
-        if progress:
-            pbar.update(int(t.to_sec() - start_time) - pbar.n)
+    while reader.has_next():
+        topic, data, t_ns = reader.read_next()
+
+        if start_ns is None:
+            start_ns = t_ns + int(start * 1e9)
+            if duration is not None and 0 <= duration != float("inf"):
+                end_ns = start_ns + int(duration * 1e9)
+            if progress:
+                total = int(duration) if (duration and duration > 0) else None
+                pbar = tqdm(total=total, unit="s")
+
+        if t_ns < start_ns:
+            continue
+        if end_ns is not None and t_ns > end_ns:
+            break
+
+        msg = deserialize_message(data, get_message(type_map[topic]))
+        if pbar is not None:
+            pbar.update(int((t_ns - start_ns) * 1e-9) - pbar.n)
         yield topic, msg
 
-    bag.close()
-
-
-def get_log_dir():
-    import subprocess
-
-    return subprocess.check_output("roslaunch-logs").strip()
-
-
-def create_log(suffix, timestamp=None):
-    import datetime
-
-    if timestamp is None:
-        timestamp = rospy.Time.now().to_sec()
-
-    now = datetime.datetime.fromtimestamp(timestamp)
-    log_name = now.strftime("%Y-%m-%d-%H-%M-%S-") + suffix
-
-    log_dir = get_log_dir()
-
-    return os.path.join(log_dir, log_name)
+    if pbar is not None:
+        pbar.close()
+    del reader
 
 
 def load_nav_data(file, start=0, duration=None, progress=True):
@@ -179,14 +270,17 @@ def load_nav_data(file, start=0, duration=None, progress=True):
     from .topics import IMU_TOPIC, DVL_TOPIC, DEPTH_TOPIC
 
     dvl, depth, imu = [], [], []
-    for topic, msg in read_bag(file, start, duration, progress):
-        time = msg.header.stamp.to_sec()
+    # filter at the storage layer so large unused topics (sonar images)
+    # are never deserialized
+    nav_topics = [IMU_TOPIC, DVL_TOPIC, DEPTH_TOPIC]
+    for topic, msg in read_bag(file, start, duration, progress, topics=nav_topics):
+        t = to_sec(msg.header.stamp)
         if topic == DVL_TOPIC:
             dvl.append(
-                (time, msg.velocity.x, msg.velocity.y, msg.velocity.z, msg.altitude)
+                (t, msg.velocity.x, msg.velocity.y, msg.velocity.z, msg.altitude)
             )
         elif topic == DEPTH_TOPIC:
-            depth.append((time, msg.depth))
+            depth.append((t, msg.depth))
         elif topic == IMU_TOPIC:
             ax = msg.linear_acceleration.x
             ay = msg.linear_acceleration.y
@@ -204,8 +298,8 @@ def load_nav_data(file, start=0, duration=None, progress=True):
                 .compose(gtsam.Rot3.Roll(np.pi / 2.0))
                 .ypr()
             )
-            t = msg.linear_acceleration_covariance[0]
-            imu.append((time, ax, ay, az, wx, wy, wz, r, p, y, t))
+            tt = msg.linear_acceleration_covariance[0]
+            imu.append((t, ax, ay, az, wx, wy, wz, r, p, y, tt))
 
     dvl = np.array(dvl)
     depth = np.array(depth)

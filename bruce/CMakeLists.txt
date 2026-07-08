@@ -1,4 +1,5 @@
-cmake_minimum_required(VERSION 2.8.3)
+cmake_minimum_required(VERSION 3.8...3.28)
 project(bruce)
-find_package(catkin REQUIRED)
-catkin_metapackage()
+find_package(ament_cmake_auto REQUIRED)
+ament_auto_find_build_dependencies()
+ament_auto_package()

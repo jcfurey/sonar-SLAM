@@ -1,17 +1,26 @@
-#!/usr/bin/env python
-import rospy
+#!/usr/bin/env python3
+import rclpy
+
 from bruce_slam.utils.io import *
 from bruce_slam.gyro import GyroFilter
 
-if __name__ == "__main__":
-    rospy.init_node("gyro_fusion", log_level=rospy.INFO)
+
+def main(args=None):
+    rclpy.init(args=args)
 
     node = GyroFilter()
-    node.init_node()
+    node.init_node("gyro_fusion")
 
-    args, _ = common_parser().parse_known_args()
-    if not args.file:
+    try:
         loginfo("Start gyro_fusion...")
-        rospy.spin()
-    else:
-        loginfo("Start gyro_fusion...")
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    main()

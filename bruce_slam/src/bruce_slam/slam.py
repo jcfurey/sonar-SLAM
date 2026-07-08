@@ -195,7 +195,7 @@ class SLAM(object):
         t_zero = self.keyframes[0].time
         for key in range(self.current_key):
             keyframe = self.keyframes[key]
-            states[key]["time"] = (keyframe.time - t_zero).to_sec()
+            states[key]["time"] = to_sec(keyframe.time) - to_sec(t_zero)
             states[key]["pose"] = g2n(keyframe.pose)
             states[key]["dr_pose3"] = g2n(keyframe.dr_pose3)
             states[key]["cov"] = keyframe.transf_cov.ravel()
@@ -443,7 +443,7 @@ class SLAM(object):
         """
 
         # get the time a pose differnce between the provided keyframe and the last logged one
-        dt = (keyframe.time - self.keyframes[-1].time).to_sec()
+        dt = to_sec(keyframe.time) - to_sec(self.keyframes[-1].time)
         dr_odom = self.keyframes[-1].pose.between(keyframe.pose)
 
         # build a factor and insert it into the graph, providing an initial guess as well
@@ -1147,7 +1147,7 @@ class SLAM(object):
             return True
 
         # check for time
-        duration = frame.time - self.current_keyframe.time
+        duration = to_sec(frame.time) - to_sec(self.current_keyframe.time)
         if duration < self.keyframe_duration:
             return False
 

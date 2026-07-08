@@ -1,28 +1,33 @@
 #python imports
-import tf
-import rospy
 import gtsam
 import numpy as np
-import rospy
 from scipy.spatial.transform import Rotation
 
+# ros-python imports
+from tf2_ros import TransformBroadcaster
 
 # standard ros message imports
 from nav_msgs.msg import Odometry
+from std_msgs.msg import Header
 from sensor_msgs.msg import Imu
-from tf.transformations import euler_from_quaternion
-
-# import custom messages
-from rti_dvl.msg import DVL
-from bar30_depth.msg import Depth
-from kvh_gyro.msg import gyro
 
 # bruce imports
 from bruce_slam.utils.topics import *
 from bruce_slam.utils.conversions import *
 from bruce_slam.utils.io import *
+from bruce_slam.sensors import DVL_ADAPTERS, DEPTH_ADAPTERS, GYRO_ADAPTERS, make_adapter
 
-class KalmanNode(object):
+
+def euler_from_quaternion(quat):
+	"""Return (roll, pitch, yaw) from a quaternion given as (x, y, z, w).
+
+	Replaces tf.transformations.euler_from_quaternion (unavailable in ROS 2)
+	using scipy (default axis order 'xyz' == tf's 'sxyz').
+	"""
+	return Rotation.from_quat([quat[0], quat[1], quat[2], quat[3]]).as_euler("xyz")
+
+
+class KalmanNode(BruceNode):
 	'''A class to support Kalman filtering using DVL, IMU, FOG and Depth readings.
 	'''
 
@@ -35,60 +40,77 @@ class KalmanNode(object):
 		self.imu_yaw0 = None
 
 
-	def init_node(self, ns="~")->None:
+	def init_node(self, node_name="kalman", **node_kwargs)->None:
 		"""Init the node, fetch all paramaters.
 
 		Args:
-			ns (str, optional): The namespace of the node. Defaults to "~".
+			node_name (str, optional): The ROS 2 node name. Defaults to "kalman".
+			**node_kwargs: extra rclpy Node kwargs (e.g. parameter_overrides).
 		"""
 
-		self.state_vector = rospy.get_param(ns + "state_vector")
-		self.cov_matrix = rospy.get_param(ns + "cov_matrix")
-		self.R_dvl = rospy.get_param(ns + "R_dvl")
-		self.dt_dvl = rospy.get_param(ns + "dt_dvl")
-		self.H_dvl = np.array(rospy.get_param(ns + "H_dvl"))
-		self.R_imu = rospy.get_param(ns + "R_imu")
-		self.dt_imu = rospy.get_param(ns + "dt_imu")
-		self.H_imu = np.array(rospy.get_param(ns + "H_imu"))
-		self.H_gyro = np.array(rospy.get_param(ns + "H_gyro"))
-		self.R_gyro = rospy.get_param(ns + "R_gyro")
-		self.dt_gyro = rospy.get_param(ns + "dt_gyro")
-		self.H_depth = np.array(rospy.get_param(ns + "H_depth"))
-		self.R_depth = rospy.get_param(ns + "R_depth")
-		self.dt_depth = rospy.get_param(ns + "dt_depth")
-		self.Q = rospy.get_param(ns + "Q") # Process Noise Uncertainty
-		self.A_imu = rospy.get_param(ns + "A_imu") # State Transition Matrix
-		x = rospy.get_param(ns + "offset/x") # gyroscope offset matrix
-		y = rospy.get_param(ns + "offset/y")
-		z = rospy.get_param(ns + "offset/z")
-		self.offset_matrix = Rotation.from_euler("xyz",[x,y,z],degrees=True).as_matrix()
-		self.dvl_max_velocity = rospy.get_param(ns + "dvl_max_velocity")
-		self.use_gyro = rospy.get_param(ns + "use_gyro")
-		self.imu_offset = np.radians(rospy.get_param(ns + "imu_offset"))
+		# initialise the underlying rclpy node
+		BruceNode.__init__(self, node_name, **node_kwargs)
 
-		# check which version of the imu we are using
-		if rospy.get_param(ns + "imu_version") == 1:
-			self.imu_sub = rospy.Subscriber(IMU_TOPIC, Imu,callback=self.imu_callback,queue_size=250)
-		elif rospy.get_param(ns + "imu_version") == 2:
-			self.imu_sub = rospy.Subscriber(IMU_TOPIC_MK_II, Imu, callback=self.imu_callback,queue_size=250)
+		# ROS 2 parameters cannot hold 2-D arrays, so the matrices below are stored
+		# flattened (row-major) in the YAML and reshaped to their true dimensions here.
+		self.state_vector = np.array(self.get_param("state_vector"), dtype=float).reshape(12, 1)
+		self.cov_matrix = np.array(self.get_param("cov_matrix"), dtype=float).reshape(12, 12)
+		self.R_dvl = np.array(self.get_param("R_dvl"), dtype=float).reshape(3, 3)
+		self.dt_dvl = self.get_param("dt_dvl")
+		self.H_dvl = np.array(self.get_param("H_dvl"), dtype=float).reshape(3, 12)
+		self.R_imu = np.array(self.get_param("R_imu"), dtype=float).reshape(3, 3)
+		self.dt_imu = self.get_param("dt_imu")
+		self.H_imu = np.array(self.get_param("H_imu"), dtype=float).reshape(3, 12)
+		self.H_gyro = np.array(self.get_param("H_gyro"), dtype=float).reshape(3, 12)
+		self.R_gyro = np.array(self.get_param("R_gyro"), dtype=float).reshape(3, 3)
+		self.dt_gyro = self.get_param("dt_gyro")
+		self.H_depth = np.array(self.get_param("H_depth"), dtype=float).reshape(3, 12)
+		self.R_depth = np.array(self.get_param("R_depth"), dtype=float).reshape(3, 3)
+		self.dt_depth = self.get_param("dt_depth")
+		self.Q = np.array(self.get_param("Q"), dtype=float).reshape(12, 12)  # Process Noise Uncertainty
+		self.A_imu = np.array(self.get_param("A_imu"), dtype=float).reshape(12, 12)  # State Transition Matrix
+		x = self.get_param("offset/x")  # gyroscope offset matrix
+		y = self.get_param("offset/y")
+		z = self.get_param("offset/z")
+		self.offset_matrix = Rotation.from_euler("xyz",[x,y,z],degrees=True).as_matrix()
+		self.dvl_max_velocity = self.get_param("dvl_max_velocity")
+		self.use_gyro = self.get_param("use_gyro")
+		self.imu_offset = np.radians(self.get_param("imu_offset"))
+
+		# sensor drivers (pluggable adapters + configurable topics)
+		self.dvl_adapter, dvl_type = make_adapter(
+			DVL_ADAPTERS, self.get_param("dvl/driver", "rti_dvl"), self)
+		self.depth_adapter, depth_type = make_adapter(
+			DEPTH_ADAPTERS, self.get_param("depth/driver", "bar30"), self)
+
+		# IMU (standard sensor_msgs/Imu), topic configurable
+		imu_topic = self.get_param("imu/topic", "")
+		if not imu_topic:
+			imu_topic = IMU_TOPIC if self.get_param("imu_version") == 1 else IMU_TOPIC_MK_II
+		self.imu_sub = self.create_subscription(Imu, imu_topic, self.imu_callback, 250)
 
 		# define the other subcribers
-		self.dvl_sub = rospy.Subscriber(DVL_TOPIC,DVL,callback=self.dvl_callback,queue_size=250)
-		self.depth_sub = rospy.Subscriber(DEPTH_TOPIC, Depth,callback=self.pressure_callback,queue_size=250)
-		self.odom_pub_kalman = rospy.Publisher(LOCALIZATION_ODOM_TOPIC, Odometry, queue_size=250)
+		self.dvl_sub = self.create_subscription(
+			dvl_type, self.get_param("dvl/topic", DVL_TOPIC), self.dvl_callback, 250)
+		self.depth_sub = self.create_subscription(
+			depth_type, self.get_param("depth/topic", DEPTH_TOPIC), self.pressure_callback, 250)
+		self.odom_pub_kalman = self.create_publisher(Odometry, LOCALIZATION_ODOM_TOPIC, 250)
 
 		# define the transfor broadcaster
-		self.tf1 = tf.TransformBroadcaster()
+		self.tf1 = TransformBroadcaster(self)
 
 		# if we are using the gyroscope set up the subscribers
 		if self.use_gyro:
-			self.gyro_sub = rospy.Subscriber(GYRO_TOPIC, gyro, self.gyro_callback, queue_size=250)
+			self.gyro_adapter, gyro_type = make_adapter(
+				GYRO_ADAPTERS, self.get_param("gyro/driver", "kvh_gyro"), self)
+			self.gyro_sub = self.create_subscription(
+				gyro_type, self.get_param("gyro/topic", GYRO_TOPIC), self.gyro_callback, 250)
 
 		# define the initial pose, all zeros
 		R_init = gtsam.Rot3.Ypr(0.,0.,0.)
 		self.pose = gtsam.Pose3(R_init, gtsam.Point3(0, 0, 0))
 
-		# log at the roslevel that we are done with init 
+		# log at the roslevel that we are done with init
 		loginfo("Kalman Node is initialized")
 
 
@@ -135,28 +157,28 @@ class KalmanNode(object):
 		return corrected_x, corrected_P
 
 
-	def gyro_callback(self,gyro_msg:gyro)->None:
+	def gyro_callback(self,gyro_msg)->None:
 		"""Handle the Kalman Filter using the FOG only.
 		Args:
-			gyro_msg (gyro): the euler angles from the gyro
+			gyro_msg: the raw gyro driver message (normalized via the gyro adapter)
 		"""
 
 		# parse message and apply the offset matrix
-		arr = np.array(list(gyro_msg.delta))
-		arr = arr.dot(self.offset_matrix) 
+		arr = self.gyro_adapter(gyro_msg).delta
+		arr = arr.dot(self.offset_matrix)
 		delta_yaw_meas = np.array([[arr[0]],[0],[0]]) #Measurement of shape(3,1) to apply Kalman
 		self.state_vector,self.cov_matrix = self.kalman_correct(self.state_vector, self.cov_matrix, delta_yaw_meas, self.H_gyro, self.R_gyro)
 		self.yaw_gyro += self.state_vector[11][0]
 
-	def dvl_callback(self, dvl_msg:DVL)->None:
+	def dvl_callback(self, dvl_msg)->None:
 		"""Handle the Kalman Filter using the DVL only.
 
 		Args:
-			dvl_msg (DVL): the message from the DVL
+			dvl_msg: the raw DVL driver message (normalized via the DVL adapter)
 		"""
 
-		# parse the dvl velocites 
-		dvl_measurement = np.array([[dvl_msg.velocity.x], [dvl_msg.velocity.y], [dvl_msg.velocity.z]])
+		# parse the dvl velocites
+		dvl_measurement = self.dvl_adapter(dvl_msg).velocity.reshape(3, 1)
 
 		# We do not do a kalman correction if the speed is high.
 		if np.any(np.abs(dvl_measurement) > self.dvl_max_velocity):
@@ -165,13 +187,13 @@ class KalmanNode(object):
 			self.state_vector,self.cov_matrix  = self.kalman_correct(self.state_vector, self.cov_matrix, dvl_measurement, self.H_dvl, self.R_dvl)
 
 
-	def pressure_callback(self,depth_msg:Depth):
+	def pressure_callback(self,depth_msg):
 		"""Handle the Kalman Filter using the Depth.
 		Args:
-			depth_msg (Depth): pressure
+			depth_msg: the raw depth driver message (normalized via the depth adapter)
 		"""
 
-		depth = np.array([[depth_msg.depth],[0],[0]]) # We need the shape(3,1) for the correction
+		depth = np.array([[self.depth_adapter(depth_msg).depth],[0],[0]]) # shape(3,1) for the correction
 		self.state_vector,self.cov_matrix = self.kalman_correct(self.state_vector, self.cov_matrix, depth, self.H_depth, self.R_depth)
 
 	def imu_callback(self, imu_msg:Imu)->None:
@@ -191,7 +213,7 @@ class KalmanNode(object):
 		#if we have no yaw yet, set this one as zero
 		if self.imu_yaw0 is None:
 			self.imu_yaw0 = yaw_z
-		
+
 		# make yaw relative to the first meas
 		euler_angle[2] -= self.imu_yaw0
 
@@ -205,7 +227,7 @@ class KalmanNode(object):
 
 		# check if we are using the FOG
 		if self.use_gyro:
-			R = gtsam.Rot3.Ypr(self.yaw_gyro,self.state_vector[4][0], self.state_vector[3][0]) 
+			R = gtsam.Rot3.Ypr(self.yaw_gyro,self.state_vector[4][0], self.state_vector[3][0])
 			pose2 = gtsam.Pose2(self.pose.x(), self.pose.y(), self.yaw_gyro)
 		else: # We are not using the gyro
 			R = gtsam.Rot3.Ypr(self.state_vector[5][0], self.state_vector[4][0], self.state_vector[3][0])
@@ -216,13 +238,13 @@ class KalmanNode(object):
 		self.pose = gtsam.Pose3(R, gtsam.Point3(point[0], point[1], 0))
 		self.send_odometry(imu_msg.header.stamp)
 
-	def send_odometry(self,t:float):
+	def send_odometry(self,t):
 		"""Publish the pose.
 		Args:
-			t (float): time from imu_msg
+			t: time stamp from imu_msg (builtin_interfaces/Time)
 		"""
-		
-		header = rospy.Header()
+
+		header = Header()
 		header.stamp = t
 		header.frame_id = "odom"
 		odom_msg = Odometry()
@@ -237,7 +259,8 @@ class KalmanNode(object):
 		odom_msg.twist.twist.angular.z = 0.
 		self.odom_pub_kalman.publish(odom_msg)
 
+		p = odom_msg.pose.pose.position
+		q = odom_msg.pose.pose.orientation
 		self.tf1.sendTransform(
-			(odom_msg.pose.pose.position.x, odom_msg.pose.pose.position.y, odom_msg.pose.pose.position.z),
-			(odom_msg.pose.pose.orientation.x, odom_msg.pose.pose.orientation.y, odom_msg.pose.pose.orientation.z, odom_msg.pose.pose.orientation.w),
-			header.stamp, "base_link", "odom")
+			make_transform((p.x, p.y, p.z), (q.x, q.y, q.z, q.w), header.stamp, "odom", "base_link")
+		)

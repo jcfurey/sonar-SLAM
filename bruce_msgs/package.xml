@@ -1,17 +1,26 @@
 <?xml version="1.0"?>
-<package format="2">
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
     <name>bruce_msgs</name>
     <version>0.0.1</version>
-    <description> The BlueROV Underwater SLAM and Exploration ROS messages and services. </description>
+    <description> The BlueROV Underwater SLAM and Exploration ROS 2 messages and services. </description>
     <author>Jinkun Wang</author>
     <maintainer email="jmcconn1@stevens.edu">John McConnell</maintainer>
-    <license>MIT License</license>
-    <buildtool_depend>catkin</buildtool_depend>
-    <depend>python-catkin-tools</depend>
-    <depend>rospy</depend>
+    <license>MIT</license>
+
+    <buildtool_depend>ament_cmake</buildtool_depend>
+    <buildtool_depend>ament_cmake_auto</buildtool_depend>
+    <buildtool_depend>rosidl_default_generators</buildtool_depend>
+
+    <depend>std_msgs</depend>
     <depend>geometry_msgs</depend>
     <depend>nav_msgs</depend>
     <depend>sensor_msgs</depend>
-    <build_depend>message_generation</build_depend>
-    <exec_depend>message_runtime</exec_depend>
+
+    <exec_depend>rosidl_default_runtime</exec_depend>
+    <member_of_group>rosidl_interface_packages</member_of_group>
+
+    <export>
+        <build_type>ament_cmake</build_type>
+    </export>
 </package>

@@ -1,14 +1,16 @@
 # python imports
+import os
 import threading
-import tf
-import rospy
 import cv_bridge
+from ament_index_python.packages import get_package_share_directory
+
 from nav_msgs.msg import Odometry
-from message_filters import  Subscriber
+from message_filters import Subscriber
 from sensor_msgs.msg import PointCloud2
 from visualization_msgs.msg import Marker
 from geometry_msgs.msg import PoseWithCovarianceStamped
 from message_filters import ApproximateTimeSynchronizer
+from tf2_ros import TransformBroadcaster
 
 # bruce imports
 from bruce_slam.utils.io import *
@@ -16,114 +18,134 @@ from bruce_slam.utils.conversions import *
 from bruce_slam.utils.visualization import *
 from bruce_slam.slam import SLAM, Keyframe
 from bruce_slam import pcl
-
-# Argonaut imports
-from sonar_oculus.msg import OculusPing
+from bruce_slam.sensors import SONAR_ADAPTERS, make_adapter
 
 
-class SLAMNode(SLAM):
+class SLAMNode(SLAM, BruceNode):
     """This class takes the functionality from slam.py and implments it in the ros
-    environment. 
+    environment.
     """
-    
+
     def __init__(self):
-        super(SLAMNode, self).__init__()
+        SLAM.__init__(self)
 
         # the threading lock
         self.lock = threading.RLock()
 
-    def init_node(self, ns="~")->None:
+        # sonar-configuration subscription state (see sonar_callback)
+        self.sonar_sub = None
+        self.oculus_configured = False
+
+    def init_node(self, node_name="slam", **node_kwargs)->None:
         """Configures the SLAM node
 
         Args:
-            ns (str, optional): The namespace of the node. Defaults to "~".
+            node_name (str, optional): The ROS 2 node name. Defaults to "slam".
+            **node_kwargs: extra rclpy Node kwargs (e.g. parameter_overrides).
         """
 
+        # initialise the underlying rclpy node
+        BruceNode.__init__(self, node_name, **node_kwargs)
+
         #keyframe paramters, how often to add them
-        self.keyframe_duration = rospy.get_param(ns + "keyframe_duration")
-        self.keyframe_duration = rospy.Duration(self.keyframe_duration)
-        self.keyframe_translation = rospy.get_param(ns + "keyframe_translation")
-        self.keyframe_rotation = rospy.get_param(ns + "keyframe_rotation")
+        self.keyframe_duration = self.get_param("keyframe_duration")
+        self.keyframe_translation = self.get_param("keyframe_translation")
+        self.keyframe_rotation = self.get_param("keyframe_rotation")
 
         #SLAM paramter, are we using SLAM or just dead reckoning
-        self.enable_slam = rospy.get_param(ns + "enable_slam")
+        self.enable_slam = self.get_param("enable_slam")
         print("SLAM STATUS: ", self.enable_slam)
 
         #noise models
-        self.prior_sigmas = rospy.get_param(ns + "prior_sigmas")
-        self.odom_sigmas = rospy.get_param(ns + "odom_sigmas")
-        self.icp_odom_sigmas = rospy.get_param(ns + "icp_odom_sigmas")
+        self.prior_sigmas = self.get_param("prior_sigmas")
+        self.odom_sigmas = self.get_param("odom_sigmas")
+        self.icp_odom_sigmas = self.get_param("icp_odom_sigmas")
 
         #resultion for map downsampling
-        self.point_resolution = rospy.get_param(ns + "point_resolution")
+        self.point_resolution = self.get_param("point_resolution")
 
         #sequential scan matching parameters (SSM)
-        self.ssm_params.enable = rospy.get_param(ns + "ssm/enable")
-        self.ssm_params.min_points = rospy.get_param(ns + "ssm/min_points")
-        self.ssm_params.max_translation = rospy.get_param(ns + "ssm/max_translation")
-        self.ssm_params.max_rotation = rospy.get_param(ns + "ssm/max_rotation")
-        self.ssm_params.target_frames = rospy.get_param(ns + "ssm/target_frames")
+        self.ssm_params.enable = self.get_param("ssm/enable")
+        self.ssm_params.min_points = self.get_param("ssm/min_points")
+        self.ssm_params.max_translation = self.get_param("ssm/max_translation")
+        self.ssm_params.max_rotation = self.get_param("ssm/max_rotation")
+        self.ssm_params.target_frames = self.get_param("ssm/target_frames")
         print("SSM: ", self.ssm_params.enable)
 
         #non sequential scan matching parameters (NSSM) aka loop closures
-        self.nssm_params.enable = rospy.get_param(ns + "nssm/enable")
-        self.nssm_params.min_st_sep = rospy.get_param(ns + "nssm/min_st_sep")
-        self.nssm_params.min_points = rospy.get_param(ns + "nssm/min_points")
-        self.nssm_params.max_translation = rospy.get_param(ns + "nssm/max_translation")
-        self.nssm_params.max_rotation = rospy.get_param(ns + "nssm/max_rotation")
-        self.nssm_params.source_frames = rospy.get_param(ns + "nssm/source_frames")
-        self.nssm_params.cov_samples = rospy.get_param(ns + "nssm/cov_samples")
+        self.nssm_params.enable = self.get_param("nssm/enable")
+        self.nssm_params.min_st_sep = self.get_param("nssm/min_st_sep")
+        self.nssm_params.min_points = self.get_param("nssm/min_points")
+        self.nssm_params.max_translation = self.get_param("nssm/max_translation")
+        self.nssm_params.max_rotation = self.get_param("nssm/max_rotation")
+        self.nssm_params.source_frames = self.get_param("nssm/source_frames")
+        self.nssm_params.cov_samples = self.get_param("nssm/cov_samples")
         print("NSSM: ", self.nssm_params.enable)
 
-        #pairwise consistency maximization parameters for loop closure 
+        #pairwise consistency maximization parameters for loop closure
         #outliar rejection
-        self.pcm_queue_size = rospy.get_param(ns + "pcm_queue_size")
-        self.min_pcm = rospy.get_param(ns + "min_pcm")
+        self.pcm_queue_size = self.get_param("pcm_queue_size")
+        self.min_pcm = self.get_param("min_pcm")
 
         #mak delay between an incoming point cloud and dead reckoning
         self.feature_odom_sync_max_delay = 0.5
 
+        # subscribe to the raw sonar once so the Oculus geometry (max range /
+        # aperture, used to bound NSSM loop-closure search) reflects the real
+        # sensor instead of the OculusProperty defaults. The subscription is
+        # destroyed after the first ping (config is assumed static).
+        sonar_driver = self.get_param("sonar/driver", "oculus_compressed")
+        self.sonar_topic = self.get_param("sonar/topic", SONAR_TOPIC)
+        self.sonar_adapter, sonar_type = make_adapter(SONAR_ADAPTERS, sonar_driver, self)
+        self.sonar_sub = self.create_subscription(
+            sonar_type, self.sonar_topic, self.sonar_callback, 10)
+
         #define the subsrcibing topics
-        self.feature_sub = Subscriber(SONAR_FEATURE_TOPIC, PointCloud2)
-        self.odom_sub = Subscriber(LOCALIZATION_ODOM_TOPIC, Odometry)
+        self.feature_sub = Subscriber(self, PointCloud2, SONAR_FEATURE_TOPIC)
+        self.odom_sub = Subscriber(self, Odometry, LOCALIZATION_ODOM_TOPIC)
 
         #define the sync policy
         self.time_sync = ApproximateTimeSynchronizer(
-            [self.feature_sub, self.odom_sub], 20, 
+            [self.feature_sub, self.odom_sub], 20,
             self.feature_odom_sync_max_delay, allow_headerless = False)
 
         #register the callback in the sync policy
         self.time_sync.registerCallback(self.SLAM_callback)
 
         #pose publisher
-        self.pose_pub = rospy.Publisher(
-            SLAM_POSE_TOPIC, PoseWithCovarianceStamped, queue_size=10)
+        self.pose_pub = self.create_publisher(
+            PoseWithCovarianceStamped, SLAM_POSE_TOPIC, 10)
 
         #dead reckoning topic
-        self.odom_pub = rospy.Publisher(SLAM_ODOM_TOPIC, Odometry, queue_size=10)
+        self.odom_pub = self.create_publisher(Odometry, SLAM_ODOM_TOPIC, 10)
 
         #SLAM trajectory topic
-        self.traj_pub = rospy.Publisher(
-            SLAM_TRAJ_TOPIC, PointCloud2, queue_size=1, latch=True)
+        self.traj_pub = self.create_publisher(
+            PointCloud2, SLAM_TRAJ_TOPIC, latched_qos())
 
         #constraints between poses
-        self.constraint_pub = rospy.Publisher(
-            SLAM_CONSTRAINT_TOPIC, Marker, queue_size=1, latch=True)
+        self.constraint_pub = self.create_publisher(
+            Marker, SLAM_CONSTRAINT_TOPIC, latched_qos())
 
         #point cloud publisher topic
-        self.cloud_pub = rospy.Publisher(
-            SLAM_CLOUD_TOPIC, PointCloud2, queue_size=1, latch=True)
+        self.cloud_pub = self.create_publisher(
+            PointCloud2, SLAM_CLOUD_TOPIC, latched_qos())
 
         #tf broadcaster to show pose
-        self.tf = tf.TransformBroadcaster()
+        self.tf = TransformBroadcaster(self)
 
         #cv bridge object
         self.CVbridge = cv_bridge.CvBridge()
 
-        #get the ICP configuration from the yaml fukle
-        icp_config = rospy.get_param(ns + "icp_config")
+        #get the ICP configuration from the yaml file. The launch file resolves this to
+        #an absolute path; fall back to the installed package share if unset/missing.
+        icp_config = self.get_param("icp_config", "")
+        if not icp_config or not os.path.isfile(icp_config):
+            icp_config = os.path.join(
+                get_package_share_directory("bruce_slam"), "config", "icp.yaml"
+            )
         self.icp.loadFromYaml(icp_config)
-        
+
         # define the robot ID this is not used here, extended in multi-robot SLAM
         self.rov_id = ""
 
@@ -132,16 +154,22 @@ class SLAMNode(SLAM):
         loginfo("SLAM node is initialized")
 
     @add_lock
-    def sonar_callback(self, ping:OculusPing)->None:
-        """Subscribe once to configure Oculus property.
-        Assume sonar configuration doesn't change much.
+    def sonar_callback(self, sonar_msg)->None:
+        """Configure the Oculus property from the first sonar ping, then stop
+        listening. Assume sonar configuration doesn't change much. Idempotent so
+        the offline bag pump can call it directly for every sonar message.
 
         Args:
-            ping (OculusPing): The sonar message. 
+            sonar_msg: the raw sonar driver message (normalized via the adapter).
         """
-        
-        self.oculus.configure(ping)
-        self.sonar_sub.unregister()
+
+        if self.oculus_configured:
+            return
+        self.oculus.configure(self.sonar_adapter(sonar_msg))
+        self.oculus_configured = True
+        if self.sonar_sub is not None:
+            self.destroy_subscription(self.sonar_sub)
+            self.sonar_sub = None
 
     @add_lock
     def SLAM_callback(self, feature_msg:PointCloud2, odom_msg:Odometry)->None:
@@ -153,7 +181,7 @@ class SLAMNode(SLAM):
             odom_msg (Odometry): the incoming DVL/IMU state estimate
         """
 
-        #aquire the lock 
+        #aquire the lock
         self.lock.acquire()
 
         #get rostime from the point cloud
@@ -166,7 +194,7 @@ class SLAMNode(SLAM):
         frame = Keyframe(False, time, dr_pose3)
 
         #convert the point cloud message to a numpy array of 2D
-        points = ros_numpy.point_cloud2.pointcloud2_to_xyz_array(feature_msg)
+        points = pointcloud2_to_xyz_array(feature_msg)
         points = np.c_[points[:,0] , -1 *  points[:,2]]
 
         # In case feature extraction is skipped in this frame
@@ -185,7 +213,7 @@ class SLAMNode(SLAM):
             frame.update(pose)
 
 
-        #check frame staus, are we actually adding a keyframe? This is determined based on distance 
+        #check frame staus, are we actually adding a keyframe? This is determined based on distance
         #traveled according to dead reckoning
         if frame.status:
 
@@ -206,7 +234,7 @@ class SLAMNode(SLAM):
             #nonsequential scan matching is True (a loop closure occured) update graph again
             if self.nssm_params.enable  and self.add_nonsequential_scan_matching():
                 self.update_factor_graph()
-            
+
         #update current time step and publish the topics
         self.current_frame = frame
         self.publish_all()
@@ -229,7 +257,7 @@ class SLAMNode(SLAM):
         """Append dead reckoning from Localization to SLAM estimate to achieve realtime TF.
         """
 
-        #define a pose with covariance message 
+        #define a pose with covariance message
         pose_msg = PoseWithCovarianceStamped()
         pose_msg.header.stamp = self.current_frame.time
         if self.rov_id == "":
@@ -249,11 +277,13 @@ class SLAMNode(SLAM):
         p = o2m.position
         q = o2m.orientation
         self.tf.sendTransform(
-            (p.x, p.y, p.z),
-            [q.x, q.y, q.z, q.w],
-            self.current_frame.time,
-            "odom",
-            "map",
+            make_transform(
+                (p.x, p.y, p.z),
+                (q.x, q.y, q.z, q.w),
+                self.current_frame.time,
+                "map",
+                "odom",
+            )
         )
 
         odom_msg = Odometry()
@@ -325,7 +355,7 @@ class SLAMNode(SLAM):
         #list of keyframe ids
         all_keys = []
 
-        #loop over all the keyframes, register 
+        #loop over all the keyframes, register
         #the point cloud to the orign based on the SLAM estinmate
         for key in range(len(self.keyframes)):
 
@@ -349,7 +379,7 @@ class SLAMNode(SLAM):
 
         #parse the downsampled cloud into the ros xyzi format
         sampled_xyzi = np.c_[sampled_points, np.zeros_like(sampled_keys), sampled_keys]
-        
+
         #if there are no points return and do nothing
         if len(sampled_xyzi) == 0:
             return

@@ -231,7 +231,10 @@ class Mapping(object):
             # Save some images for plotting
             #############################################
             if self.save_fig:
-                keyframe.cimg = r2n(ping)
+                # gamma-corrected intensity image from the normalized SonarPing
+                keyframe.cimg = apply_gamma(ping.image, ping.fire_msg.gamma).astype(
+                    np.float32
+                )
                 keyframe.limg = logodds
             #############################################
 
@@ -239,7 +242,7 @@ class Mapping(object):
             self.point_cloud = points
 
         if self.pub_intensity:
-            intensity = r2n(ping.ping)[::r_skip, ::c_skip]
+            intensity = ping.image[:: self.oculus_r_skip, :: self.oculus_c_skip]
             keyframe.intensity = intensity.ravel()
 
         self.fit_grid(keyframe)
@@ -286,14 +289,14 @@ class Mapping(object):
 
         occ_msg.info.origin.position.x = self.x0 + self.cmin * self.resolution
         occ_msg.info.origin.position.y = self.y0 + self.rmin * self.resolution
-        occ_msg.info.origin.orientation.x = 0
-        occ_msg.info.origin.orientation.y = 0
-        occ_msg.info.origin.orientation.z = 0
-        occ_msg.info.origin.orientation.w = 1
-        occ_msg.info.width = self.cmax - self.cmin + 1
-        occ_msg.info.height = self.rmax - self.rmin + 1
-        occ_msg.info.resolution = self.resolution
-        occ_msg.data = list(occ.ravel())
+        occ_msg.info.origin.orientation.x = 0.0
+        occ_msg.info.origin.orientation.y = 0.0
+        occ_msg.info.origin.orientation.z = 0.0
+        occ_msg.info.origin.orientation.w = 1.0
+        occ_msg.info.width = int(self.cmax - self.cmin + 1)
+        occ_msg.info.height = int(self.rmax - self.rmin + 1)
+        occ_msg.info.resolution = float(self.resolution)
+        occ_msg.data = occ.ravel().tolist()
 
         return occ_msg
 
@@ -343,14 +346,14 @@ class Mapping(object):
         occ = np.int8(np.clip(100 * probs, 0, 100))
         occ_msg.info.origin.position.x = self.x0 + cmin * resolution
         occ_msg.info.origin.position.y = self.y0 + rmin * resolution
-        occ_msg.info.origin.orientation.x = 0
-        occ_msg.info.origin.orientation.y = 0
-        occ_msg.info.origin.orientation.z = 0
-        occ_msg.info.origin.orientation.w = 1
+        occ_msg.info.origin.orientation.x = 0.0
+        occ_msg.info.origin.orientation.y = 0.0
+        occ_msg.info.origin.orientation.z = 0.0
+        occ_msg.info.origin.orientation.w = 1.0
         occ_msg.info.width = occ.shape[1]
         occ_msg.info.height = occ.shape[0]
         occ_msg.info.resolution = resolution
-        occ_msg.data = list(occ.ravel())
+        occ_msg.data = occ.ravel().tolist()
 
         return occ_msg
 
@@ -427,14 +430,14 @@ class Mapping(object):
 
         occ_msg.info.origin.position.x = x0
         occ_msg.info.origin.position.y = y0
-        occ_msg.info.origin.orientation.x = 0
-        occ_msg.info.origin.orientation.y = 0
-        occ_msg.info.origin.orientation.z = 0
-        occ_msg.info.origin.orientation.w = 1
+        occ_msg.info.origin.orientation.x = 0.0
+        occ_msg.info.origin.orientation.y = 0.0
+        occ_msg.info.origin.orientation.z = 0.0
+        occ_msg.info.origin.orientation.w = 1.0
         occ_msg.info.width = occ.shape[1]
         occ_msg.info.height = occ.shape[0]
         occ_msg.info.resolution = resolution
-        occ_msg.data = list(occ.ravel())
+        occ_msg.data = occ.ravel().tolist()
 
         return occ_msg
 

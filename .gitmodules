@@ -1,0 +1,6 @@
+[submodule "third_party/libnabo"]
+	path = third_party/libnabo
+	url = https://github.com/norlab-ulaval/libnabo.git
+[submodule "third_party/libpointmatcher"]
+	path = third_party/libpointmatcher
+	url = https://github.com/norlab-ulaval/libpointmatcher.git

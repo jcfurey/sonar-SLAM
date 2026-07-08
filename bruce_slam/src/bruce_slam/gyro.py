@@ -1,60 +1,71 @@
 import numpy as np
-import rospy
 from nav_msgs.msg import Odometry
+from std_msgs.msg import Header
 import gtsam
 from scipy.spatial.transform import Rotation
-
-from kvh_gyro.msg import gyro
 
 from bruce_slam.utils.topics import *
 from bruce_slam.utils.conversions import *
 from bruce_slam.utils.io import *
+from bruce_slam.sensors import GYRO_ADAPTERS, make_adapter
 
-from std_msgs.msg import String, Float32
 
-
-class GyroFilter(object):
+class GyroFilter(BruceNode):
 	'''A class to support dead reckoning using DVL and IMU readings
 	'''
 	def __init__(self):
 		# start the euler angles
 		self.roll, self.yaw, self.pitch = 90.,0.,0.
 
-	def init_node(self, ns:str="~")->None:
+	def init_node(self, node_name:str="gyro_fusion", **node_kwargs)->None:
 		"""Node init, get all the relevant params etc.
 
 		Args:
-			ns (str, optional): The namespace the node is in. Defaults to "~".
+			node_name (str, optional): The ROS 2 node name. Defaults to "gyro_fusion".
+			**node_kwargs: extra rclpy Node kwargs (e.g. parameter_overrides).
 		"""
 
+		# initialise the underlying rclpy node
+		BruceNode.__init__(self, node_name, **node_kwargs)
+
 		# define the rotation offset matrix for the gyro, this makes the gyro frame align with the sonar frame
-		x = rospy.get_param(ns + "offset/x")
-		y = rospy.get_param(ns + "offset/y")
-		z = rospy.get_param(ns + "offset/z")
+		x = self.get_param("offset/x")
+		y = self.get_param("offset/y")
+		z = self.get_param("offset/z")
 		self.offset_matrix = Rotation.from_euler("xyz",[x,y,z],degrees=True).as_matrix()
 
 		# the speed the earth is rotating
-		self.latitude = np.radians(rospy.get_param(ns + "latitude"))
+		self.latitude = np.radians(self.get_param("latitude"))
 		self.earth_rate = -15.04107 * np.sin(self.latitude) / 3600.0
-		self.sensor_rate = rospy.get_param(ns + "sensor_rate")
+		self.sensor_rate = self.get_param("sensor_rate")
 
-		# define tf transformer and gyro sub
-		self.odom_pub = rospy.Publisher(GYRO_INTEGRATION_TOPIC, Odometry, queue_size=self.sensor_rate+50)
-		self.gyro_sub = rospy.Subscriber(GYRO_TOPIC, gyro, self.callback, queue_size=self.sensor_rate+50)
+		# gyro driver (pluggable adapter + configurable topic)
+		self.gyro_adapter, gyro_type = make_adapter(
+			GYRO_ADAPTERS, self.get_param("gyro/driver", "kvh_gyro"), self)
+		self.gyro_topic = self.get_param("gyro/topic", GYRO_TOPIC)
+
+		# define tf transformer and gyro sub. QoS depth must be an int (a float
+		# sensor_rate in the YAML would otherwise make rclpy raise).
+		queue_depth = int(self.sensor_rate) + 50
+		self.odom_pub = self.create_publisher(Odometry, GYRO_INTEGRATION_TOPIC, queue_depth)
+		self.gyro_sub = self.create_subscription(
+			gyro_type, self.gyro_topic, self.callback, queue_depth)
 
 		loginfo("Gyro filtering node is initialized")
 
 
-	def callback(self, gyro_msg:gyro)->None:
+	def callback(self, gyro_msg)->None:
 		"""Callback function, takes in the raw gyro readings (delta angles) and
 		updates the estimate of euler angles. Publishes these angles as a ROS odometry message.
 
 		Args:
-			gyro_msg (gyro): the incoming gyro message, these are delta angles not rotation rates.
+			gyro_msg: the raw gyro driver message (normalized via the gyro adapter); the
+				delta values are delta angles not rotation rates.
 		"""
 
 		# parse message and apply the offset matrix
-		dx,dy,dz = list(gyro_msg.delta)
+		reading = self.gyro_adapter(gyro_msg)
+		dx,dy,dz = reading.delta
 		arr = np.array([dx,dy,dz])
 		arr = arr.dot(self.offset_matrix)
 		delta_yaw, delta_pitch, delta_roll = arr
@@ -72,17 +83,17 @@ class GyroFilter(object):
 		pose = gtsam.Pose3(rot, gtsam.Point3(0,0,0))
 
 		# publish an odom message
-		header = rospy.Header()
-		header.stamp = gyro_msg.header.stamp
+		header = Header()
+		header.stamp = reading.header.stamp
 		header.frame_id = "odom"
 		odom_msg = Odometry()
 		odom_msg.header = header
 		odom_msg.pose.pose = g2r(pose)
 		odom_msg.child_frame_id = "base_link"
-		odom_msg.twist.twist.linear.x = 0
-		odom_msg.twist.twist.linear.y = 0
-		odom_msg.twist.twist.linear.z = 0
-		odom_msg.twist.twist.angular.x = 0
-		odom_msg.twist.twist.angular.y = 0
-		odom_msg.twist.twist.angular.z = 0
+		odom_msg.twist.twist.linear.x = 0.0
+		odom_msg.twist.twist.linear.y = 0.0
+		odom_msg.twist.twist.linear.z = 0.0
+		odom_msg.twist.twist.angular.x = 0.0
+		odom_msg.twist.twist.angular.y = 0.0
+		odom_msg.twist.twist.angular.z = 0.0
 		self.odom_pub.publish(odom_msg)
