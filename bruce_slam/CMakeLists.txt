@@ -19,6 +19,10 @@ find_package(Python3 REQUIRED COMPONENTS Interpreter Development)
 find_package(pybind11 REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(PCL REQUIRED)
+# libpointmatcher's exported libpointmatcher_LIBRARIES references the
+# yaml-cpp::yaml-cpp imported target but never find_package()s yaml-cpp
+# itself, so we have to bring the target into scope here.
+find_package(yaml-cpp REQUIRED)
 find_package(libpointmatcher REQUIRED)
 
 # Install the pure-Python package located under src/bruce_slam.
