@@ -3,6 +3,8 @@ Topics for the bruce_slam project
 """
 IMU_TOPIC = "/vn100/imu/raw"
 IMU_TOPIC_MK_II = "/vectornav/IMU"
+# default topic of REP-105 AHRS drivers (e.g. microstrain_inertial for the 3DM-GX5)
+IMU_TOPIC_ENU = "/imu/data"
 DVL_TOPIC = "/rti/body_velocity/raw"
 DEPTH_TOPIC = "/bar30/depth/raw"
 SONAR_TOPIC = "/sonar_oculus_node/M750d/ping"
