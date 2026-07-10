@@ -133,8 +133,12 @@ class FeatureExtraction(BruceNode):
         # exposed so the offline bag pump can route on the actual configured topic
         self.sonar_topic = sonar_topic
 
-        #sonar subsciber
-        self.sonar_sub = self.create_subscription(sonar_type, sonar_topic, self.callback, 10)
+        #sonar subsciber — best-effort matches SensorDataQoS publishers
+        # (sonar_proc's proc_sonar / the oculus driver) and still receives
+        # reliable ones
+        from rclpy.qos import qos_profile_sensor_data
+        self.sonar_sub = self.create_subscription(
+            sonar_type, sonar_topic, self.callback, qos_profile_sensor_data)
 
         #feature publish topic
         self.feature_pub = self.create_publisher(

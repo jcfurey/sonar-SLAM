@@ -56,6 +56,11 @@ class SLAMNode(SLAM, BruceNode):
         self.enable_slam = self.get_param("enable_slam")
         print("SLAM STATUS: ", self.enable_slam)
 
+        # emit the map->odom TF in ENU (REP-105) instead of the graph's
+        # z-down convention — pair with enu_odom_relay.py feeding the odom
+        # input (SONAR_SLAM_PLAN.md Items 3/4)
+        self.enu_world = self.get_param("enu_world", False)
+
         #noise models
         self.prior_sigmas = self.get_param("prior_sigmas")
         self.odom_sigmas = self.get_param("odom_sigmas")
@@ -97,8 +102,11 @@ class SLAMNode(SLAM, BruceNode):
         sonar_driver = self.get_param("sonar/driver", "oculus_compressed")
         self.sonar_topic = self.get_param("sonar/topic", SONAR_TOPIC)
         self.sonar_adapter, sonar_type = make_adapter(SONAR_ADAPTERS, sonar_driver, self)
+        # best-effort matches SensorDataQoS publishers (sonar_proc's
+        # proc_sonar / the oculus driver) and still receives reliable ones
+        from rclpy.qos import qos_profile_sensor_data
         self.sonar_sub = self.create_subscription(
-            sonar_type, self.sonar_topic, self.sonar_callback, 10)
+            sonar_type, self.sonar_topic, self.sonar_callback, qos_profile_sensor_data)
 
         #define the subsrcibing topics
         self.feature_sub = Subscriber(self, PointCloud2, SONAR_FEATURE_TOPIC)
@@ -276,10 +284,19 @@ class SLAMNode(SLAM, BruceNode):
         o2m = g2r(o2m)
         p = o2m.position
         q = o2m.orientation
+        tx, ty, tz = p.x, p.y, p.z
+        qx, qy, qz, qw = q.x, q.y, q.z, q.w
+        if self.enu_world:
+            # The graph (and its dr input, via enu_odom_relay) is z-down; flip
+            # the emitted map->odom back to ENU (REP-105) for external
+            # consumers — conjugation by the roll-pi transform, the same flip
+            # the relay applies on the way in.
+            ty, tz = -ty, -tz
+            qy, qz = -qy, -qz
         self.tf.sendTransform(
             make_transform(
-                (p.x, p.y, p.z),
-                (q.x, q.y, q.z, q.w),
+                (tx, ty, tz),
+                (qx, qy, qz, qw),
                 self.current_frame.time,
                 "map",
                 "odom",
@@ -295,6 +312,13 @@ class SLAMNode(SLAM, BruceNode):
             odom_msg.child_frame_id = self.rov_id + "_base_link"
         odom_msg.twist.twist = self.current_frame.twist
         self.odom_pub.publish(odom_msg)
+
+        # periodic health counters (SSM/NSSM acceptance vs keyframe count)
+        if self.current_key % 25 == 0:
+            loginfo("SLAM status: keyframes {}, SSM factors {}, NSSM accepted {}".format(
+                self.current_key,
+                getattr(self, "ssm_accepted", 0),
+                getattr(self, "nssm_accepted", 0)))
 
     def publish_constraint(self)->None:
         """Publish constraints between poses in the factor graph,

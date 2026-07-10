@@ -823,6 +823,7 @@ class SLAM(object):
                 X(ret2.source_key), ret2.target_pose.compose(ret2.estimated_transform)
             )
             ret2.inserted = True  # log as added
+            self.ssm_accepted = getattr(self, "ssm_accepted", 0) + 1
 
             # TODO remove
             if self.save_data:
@@ -874,7 +875,7 @@ class SLAM(object):
 
         # Loop over the source frames
         # Eliminate frames that do not have points in the same field of view
-        sel = np.zeros(len(target_points), np.bool)
+        sel = np.zeros(len(target_points), bool)
         for source_frame in source_frames:
 
             # pull the pose and covariance info
@@ -1128,6 +1129,10 @@ class SLAM(object):
                         (ret2.target_key, ret2.estimated_transform)
                     )
                     ret2.inserted = True  # update the status of this loop closure, don't add a loop twice
+                    self.nssm_accepted = getattr(self, "nssm_accepted", 0) + 1
+                    loginfo(
+                        "NSSM loop closure accepted: {} -> {} (total {})".format(
+                            ret2.source_key, ret2.target_key, self.nssm_accepted))
 
         return ret2
 

@@ -66,6 +66,7 @@ install(PROGRAMS
   scripts/gyro_node.py
   scripts/kalman_node.py
   scripts/mapping_node.py
+  scripts/enu_odom_relay.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

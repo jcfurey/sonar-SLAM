@@ -388,10 +388,61 @@ class GenericImageSonarAdapter(SensorAdapter):
         )
 
 
+class ProjectedSonarAdapter(SensorAdapter):
+    """marine_acoustic_msgs/ProjectedSonarImage (oculus_sonar_driver's
+    ``raw_sonar``, or preferably sonar_proc's destriped ``proc_sonar``
+    republish — SONAR_SLAM_PLAN.md Item 2b — so CFAR never sees the
+    azimuth-invariant ring artifacts).
+
+    Carries everything SonarPing needs natively: the polar image
+    (range-major rows of beams), per-beam direction vectors (bearing =
+    atan2(-y, z), the driver's declared convention — non-uniform Oculus
+    bearing spacing is preserved, unlike the generic ``image`` driver),
+    and range-bin centers. 8-bit images only (this vehicle's config).
+    """
+
+    msg_type = "marine_acoustic_msgs/msg/ProjectedSonarImage"
+
+    DTYPE_UINT8 = 0  # marine_acoustic_msgs/SonarImageData
+
+    def __init__(self, node):
+        super().__init__(node)
+        self._count = 0
+
+    def __call__(self, msg):
+        if msg.image.dtype != self.DTYPE_UINT8:
+            raise ValueError(
+                "projected_sonar adapter supports DTYPE_UINT8 only, got dtype %d"
+                % msg.image.dtype)
+        num_beams = int(msg.image.beam_count)
+        num_ranges = len(msg.ranges)
+        img = np.frombuffer(bytes(msg.image.data), np.uint8)
+        img = img[: num_ranges * num_beams].reshape(num_ranges, num_beams)
+        bearings = np.array(
+            [np.arctan2(-d.y, d.z) for d in msg.beam_directions], dtype=np.float32)
+        ranges = np.asarray(msg.ranges, dtype=np.float32)
+        # bin centers at (i + 0.5) * resolution
+        res = float(ranges[1] - ranges[0]) if num_ranges > 1 else float(ranges[0] * 2.0)
+        sos = float(getattr(msg.ping_info, "sound_speed", 0.0)) or 1500.0
+        self._count += 1
+        return SonarPing(
+            header=msg.header,
+            image=img,
+            bearings=bearings,
+            range_resolution=res,
+            num_ranges=num_ranges,
+            ping_id=self._count,
+            fire_msg=FireMsg(range=float(ranges[-1]), speed_of_sound=sos),
+            part_number=None,
+            raw=msg,
+        )
+
+
 SONAR_ADAPTERS = {
     "oculus_compressed": OculusCompressedAdapter,
     "oculus_uncompressed": OculusUncompressedAdapter,
     "image": GenericImageSonarAdapter,
+    "projected_sonar": ProjectedSonarAdapter,
 }
 
 
