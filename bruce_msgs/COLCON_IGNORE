@@ -1,0 +1,7 @@
+Retired from the build 2026-07-10: sonar_slam_cpp is the deployed port
+(identical topics/params). The python nodes additionally break under the
+operational venv-shadowed environment (numpy>=2 vs system scipy). Delete
+this file to build the python stack again (needs pip deps: gtsam
+scikit-learn tqdm shapely — see nautilus memory / workspace Dockerfile).
+The message stub packages (sonar_oculus, rti_dvl, kvh_gyro, bar30_depth)
+stay in the build — sonar_slam_cpp depends on them.
