@@ -7,6 +7,7 @@ import threading
 import yaml as pyyaml
 
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.parameter import Parameter
 from rclpy.utilities import remove_ros_args
@@ -184,7 +185,8 @@ def main(args=None):
         else:
             loginfo("Start offline slam...")
             offline(node, parsed)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
+        # normal Ctrl-C / launch-initiated shutdown — not an error
         pass
     finally:
         node.destroy_node()

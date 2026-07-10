@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import rclpy
+from rclpy.executors import ExternalShutdownException
 
 from bruce_slam.utils.io import *
 from bruce_slam.feature_extraction import FeatureExtraction
@@ -15,7 +16,8 @@ def main(args=None):
     try:
         loginfo("Start online sonar feature extraction...")
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
+        # normal Ctrl-C / launch-initiated shutdown — not an error
         pass
     finally:
         node.destroy_node()

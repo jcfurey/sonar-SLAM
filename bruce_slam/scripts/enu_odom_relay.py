@@ -14,6 +14,7 @@ the EKF for odom->base_link (SONAR_SLAM_PLAN.md Item 3).
 """
 import numpy as np
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from nav_msgs.msg import Odometry
 
@@ -70,7 +71,8 @@ def main(args=None):
     node = EnuOdomRelay()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
+        # normal Ctrl-C / launch-initiated shutdown — not an error
         pass
     finally:
         node.destroy_node()
