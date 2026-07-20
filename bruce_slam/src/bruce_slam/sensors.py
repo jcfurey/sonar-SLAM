@@ -391,7 +391,7 @@ class GenericImageSonarAdapter(SensorAdapter):
 class ProjectedSonarAdapter(SensorAdapter):
     """marine_acoustic_msgs/ProjectedSonarImage (oculus_sonar_driver's
     ``raw_sonar``, or preferably sonar_proc's destriped ``proc_sonar``
-    republish — SONAR_SLAM_PLAN.md Item 2b — so CFAR never sees the
+    republish, so CFAR never sees the
     azimuth-invariant ring artifacts).
 
     Carries everything SonarPing needs natively: the polar image

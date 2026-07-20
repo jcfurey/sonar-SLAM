@@ -10,7 +10,7 @@ flips the twist the same way, and passes header/stamp through untouched
 (the back-end ApproximateTimeSynchronizes odom against feature clouds).
 
 Replaces bruce's own dead_reckoning/kalman front-ends, which would fight
-the EKF for odom->base_link (SONAR_SLAM_PLAN.md Item 3).
+the EKF for odom->base_link.
 """
 import numpy as np
 import rclpy

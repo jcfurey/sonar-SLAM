@@ -58,7 +58,7 @@ class SLAMNode(SLAM, BruceNode):
 
         # emit the map->odom TF in ENU (REP-105) instead of the graph's
         # z-down convention — pair with enu_odom_relay.py feeding the odom
-        # input (SONAR_SLAM_PLAN.md Items 3/4)
+        # input
         self.enu_world = self.get_param("enu_world", False)
 
         #noise models
